@@ -1,0 +1,1 @@
+# paperclip-jules-adapter

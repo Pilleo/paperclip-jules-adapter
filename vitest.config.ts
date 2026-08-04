@@ -5,7 +5,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      exclude: ['src/cli/**', 'src/ui/**', 'src/server/index.ts', 'src/server/test-environment.ts', 'src/index.ts'],
+      exclude: ['dist/**', 'src/cli/**', 'src/ui/**', 'src/server/index.ts', 'src/server/test-environment.ts', 'src/index.ts'],
       thresholds: {
         lines: 80,
         functions: 80,

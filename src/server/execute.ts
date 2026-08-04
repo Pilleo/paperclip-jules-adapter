@@ -1,7 +1,7 @@
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, validateSecrets } from "./config.js";
 import { JulesAdapterSessionV1, sessionCodec } from "./session.js";
-import { JulesClient, JulesClientError } from "./jules-client.js";
+import { JulesClient } from "./jules-client.js";
 import { buildPrompt, hashPrompt } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
 import { classifyFailure } from "./failure-classifier.js";
@@ -14,44 +14,57 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       resolve();
       return;
     }
-    const timeout = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(timeout);
+
+    let timer: NodeJS.Timeout;
+
+    const abortHandler = () => {
+        clearTimeout(timer);
+        resolve();
+    };
+
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abortHandler);
       resolve();
-    }, { once: true });
+    }, ms);
+
+    signal?.addEventListener("abort", abortHandler, { once: true });
   });
 }
 
-export async function execute(ctx: any): Promise<any> {
-  const config = validateConfig(ctx.adapterConfig);
-  const secrets = validateSecrets(ctx.secrets || {});
+export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const config = validateConfig(ctx.agent.adapterConfig);
+  const secrets = validateSecrets((ctx.context?.secrets as Record<string, string | undefined>) || {});
   const client = new JulesClient(secrets.JULES_API_KEY);
 
-  let session = ctx.sessionParams ? sessionCodec.decode(ctx.sessionParams) : null;
+  let session = ctx.runtime.sessionParams ? sessionCodec.decode(ctx.runtime.sessionParams) : null;
   const pollInterval = config.pollIntervalSeconds * 1000;
   const heartbeatDeadline = Date.now() + (config.heartbeatPollWindowSeconds * 1000);
 
+  const abortSignal = (ctx as any).abortSignal || new AbortController().signal;
+  const resolvedInteractions = (ctx as any).resolvedInteractions || [];
+  const taskId = (ctx.context?.task as any)?.id || ctx.runtime.taskKey || 'unknown';
+  const taskTitle = (ctx.context?.task as any)?.title || 'Jules Task';
+  const taskDescription = (ctx.context?.task as any)?.description || '';
+
   if (!session || session.phase === 'RETRY_SCHEDULED') {
-    const issueId = ctx.task.id;
-    const runId = ctx.runId;
     const isRetry = session?.phase === 'RETRY_SCHEDULED';
     const failedSessions = session?.failedSessions || [];
     const attempt = isRetry ? (session!.attempt + 1) : 1;
 
-    let failedSessionUrl, failedSessionMessage;
+    let failedSessionId, failedSessionMessage;
     if (isRetry && failedSessions.length > 0) {
        const lastFailed = failedSessions[failedSessions.length - 1];
-       failedSessionUrl = lastFailed.sessionId;
+       failedSessionId = lastFailed.sessionId;
        failedSessionMessage = lastFailed.message;
     }
 
     const promptContext = {
-      issueId,
-      runId,
-      title: ctx.task.title,
-      description: ctx.task.description || '',
+      issueId: taskId,
+      runId: ctx.runId,
+      title: taskTitle,
+      description: taskDescription,
       isRetry,
-      failedSessionUrl,
+      failedSessionUrl: failedSessionId ? `Session ID: ${failedSessionId}` : undefined,
       failedSessionMessage
     };
 
@@ -59,18 +72,23 @@ export async function execute(ctx: any): Promise<any> {
     const pHash = hashPrompt(prompt);
 
     try {
-      const julesSession = await client.createSession({ prompt });
+      const julesSession = await client.createSession({
+          prompt,
+          repository: config.repository,
+          source: config.source,
+          baseBranch: config.baseBranch
+      });
 
       session = {
         version: 1,
-        paperclipIssueId: issueId,
+        paperclipIssueId: taskId,
         promptHash: pHash,
         repository: config.repository,
         source: config.source,
         baseBranch: config.baseBranch,
         phase: 'RUNNING',
-        julesSessionId: julesSession.name, // Assuming API returns `name` as ID
-        julesSessionUrl: julesSession.url, // If available
+        julesSessionId: julesSession.name,
+        julesSessionUrl: julesSession.url,
         attempt,
         failedSessions,
         createdAt: new Date().toISOString()
@@ -88,10 +106,10 @@ export async function execute(ctx: any): Promise<any> {
           errorCode: "jules_transient_failure",
           errorFamily: "transient_upstream",
           errorMessage: error instanceof Error ? error.message : "Unknown error",
-          retryNotBefore: getRetryNotBefore(attempt),
+          retryNotBefore: new Date(getRetryNotBefore(attempt)).toISOString(),
           sessionParams: sessionCodec.encode({
             version: 1,
-            paperclipIssueId: issueId,
+            paperclipIssueId: taskId,
             promptHash: pHash,
             repository: config.repository,
             source: config.source,
@@ -103,39 +121,46 @@ export async function execute(ctx: any): Promise<any> {
               { sessionId: 'unknown', failedAt: new Date().toISOString(), message: error instanceof Error ? error.message : "Unknown error", classification }
             ],
             createdAt: new Date().toISOString()
-          }),
+          }) as Record<string, unknown>,
           clearSession: false
         };
       }
-      throw error;
+
+      return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: "jules_create_failure",
+          errorFamily: classification === 'transient' ? 'transient_upstream' : null,
+          errorMessage: error instanceof Error ? error.message : "Unknown error",
+          clearSession: false
+      };
     }
   }
 
-  // Ensure prompt hash matches if it's not a retry
   const currentPromptContext = {
-    issueId: ctx.task.id,
+    issueId: taskId,
     runId: ctx.runId,
-    title: ctx.task.title,
-    description: ctx.task.description || '',
+    title: taskTitle,
+    description: taskDescription,
     isRetry: false
   };
   const currentHash = hashPrompt(buildPrompt(currentPromptContext, config));
   if (session.promptHash !== currentHash && session.attempt === 1) {
-    // Task identity changed in Paperclip
-    session.promptHash = currentHash; // In reality might want to restart, but following spec
+    if (ctx.onLog) {
+        await ctx.onLog('stderr', `[WARN] Task identity changed. Using original prompt hash for session ${session.julesSessionId}`);
+    }
   }
 
-  // Handle resolved interactions
-  if (session.pendingInteraction && ctx.resolvedInteractions?.length) {
-    const processed = await processResolvedInteraction(client, session.julesSessionId!, session.pendingInteraction, ctx.resolvedInteractions);
+  if (session.pendingInteraction && resolvedInteractions.length) {
+    const processed = await processResolvedInteraction(client, session.julesSessionId!, session.pendingInteraction, resolvedInteractions);
     if (processed) {
       session.pendingInteraction = undefined;
       session.phase = 'RUNNING';
     }
   }
 
-  // Bounded Polling Loop
-  while (!ctx.abortSignal?.aborted && Date.now() < heartbeatDeadline) {
+  while (!abortSignal.aborted && Date.now() < heartbeatDeadline) {
     try {
       const julesSession = await client.getSession(session.julesSessionId!);
       const state = julesSession.state || 'UNKNOWN';
@@ -148,19 +173,32 @@ export async function execute(ctx: any): Promise<any> {
 
       if (stateMachineRes.isTerminal) {
          if (session.phase === 'COMPLETED') {
+             if (!stateMachineRes.isSuccess) {
+                 return {
+                     exitCode: 0,
+                     signal: null,
+                     timedOut: false,
+                     sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+                     question: {
+                         prompt: `Jules session ${session.julesSessionId} completed but did not create a PR. Check the Jules UI for details.`,
+                         choices: [{ key: "ack", label: "Acknowledge" }]
+                     },
+                     clearSession: false
+                 };
+             }
+
              return {
                  exitCode: 0,
                  signal: null,
                  timedOut: false,
-                 sessionParams: sessionCodec.encode(session),
+                 sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
                  sessionDisplayId: session.julesSessionId,
-                 summary: stateMachineRes.isSuccess ? `Jules created PR: ${session.currentPrUrl}` : `Jules completed without a PR`,
+                 summary: `Jules created PR: ${session.currentPrUrl}`,
                  resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl },
                  clearSession: true
              };
          } else if (session.phase === 'FAILED') {
-             // Handle Jules FAILED state with retry policy
-             const classification = "task"; // Jules explicit failure usually means task failure, adjust based on real API
+             const classification = classifyFailure(julesSession.errorInfo || new Error("Explicit Jules Failure"));
              const willRetry = shouldRetry(classification, session.attempt, config);
 
              if (willRetry) {
@@ -178,8 +216,8 @@ export async function execute(ctx: any): Promise<any> {
                      errorCode: "jules_transient_failure",
                      errorFamily: "transient_upstream",
                      errorMessage: "Jules session failed",
-                     retryNotBefore: getRetryNotBefore(session.attempt),
-                     sessionParams: sessionCodec.encode(session),
+                     retryNotBefore: new Date(getRetryNotBefore(session.attempt)).toISOString(),
+                     sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
                      clearSession: false
                  };
              } else {
@@ -188,10 +226,10 @@ export async function execute(ctx: any): Promise<any> {
                      signal: null,
                      timedOut: false,
                      errorCode: "jules_task_failure",
-                     errorFamily: "client",
+                     errorFamily: null,
                      errorMessage: "Jules session failed and exhausted retries",
-                     sessionParams: sessionCodec.encode(session),
-                     clearSession: false // Retain for manual intervention
+                     sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+                     clearSession: false
                  };
              }
          }
@@ -211,45 +249,44 @@ export async function execute(ctx: any): Promise<any> {
                   exitCode: 0,
                   signal: null,
                   timedOut: false,
-                  sessionParams: sessionCodec.encode(session),
-                  interactions: [interaction.paperclipInteraction],
+                  sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+                  question: {
+                      prompt: interaction.pendingInteraction!.question,
+                      choices: [{ key: "answer", label: "Answer (via context)" }]
+                  },
                   clearSession: false
               };
           }
       }
 
-      // Wait for next poll inside heartbeat
-      await sleep(pollInterval, ctx.abortSignal);
+      await sleep(pollInterval, abortSignal);
 
     } catch (error) {
       const classification = classifyFailure(error);
 
       if (classification === 'transient') {
-         // If transient during poll, we can just let it loop if time permits, or return retry
-         await sleep(pollInterval, ctx.abortSignal);
-         continue; // Try again in loop
+         await sleep(pollInterval, abortSignal);
+         continue;
       } else {
-          // Unrecoverable polling error (e.g., config error)
           return {
              exitCode: 1,
              signal: null,
              timedOut: false,
              errorCode: "jules_polling_error",
-             errorFamily: "client",
+             errorFamily: classification === 'configuration' ? null : 'transient_upstream',
              errorMessage: error instanceof Error ? error.message : "Unknown error",
-             sessionParams: sessionCodec.encode(session),
+             sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
              clearSession: false
           };
       }
     }
   }
 
-  // Heartbeat deadline reached or aborted, return current state
   return {
     exitCode: 0,
     signal: null,
     timedOut: false,
-    sessionParams: sessionCodec.encode(session),
+    sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
     clearSession: false
   };
 }

@@ -4,8 +4,8 @@ This adapter implements support for Paperclip interactions and builds on its SDK
 
 ## Tested Environment
 
-- **Paperclip host version**: 2026.722.0
-- **Tested commit**: <commit corresponding to the deployed host> (to be determined based on deployment)
+- **Paperclip host version**: `2026.722.0`
+- **Tested commit**: `1cab074c`
 
 ## Relevant Contracts
 

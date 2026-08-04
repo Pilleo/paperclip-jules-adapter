@@ -1,6 +1,11 @@
+import { z } from 'zod';
+
 export interface CreateSessionRequest {
   title?: string;
   prompt: string;
+  repository?: string;
+  source?: string;
+  baseBranch?: string;
 }
 
 export interface SendMessageRequest {
@@ -19,6 +24,16 @@ export class JulesClientError extends Error {
   }
 }
 
+// Ensure strict Zod shapes for API models returned by Jules to avoid guessed fields
+export const JulesSessionSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().optional(),
+  state: z.string().optional(),
+  currentPrUrl: z.string().optional(),
+  errorInfo: z.any().optional()
+});
+export type JulesSession = z.infer<typeof JulesSessionSchema>;
+
 export class JulesClient {
   private baseUrl = 'https://jules.googleapis.com/v1alpha';
 
@@ -32,7 +47,7 @@ export class JulesClient {
     const url = `${this.baseUrl}${path}`;
     const headers = {
       'Content-Type': 'application/json',
-      'X-Goog-Api-Key': this.apiKey, // Assuming Jules API uses this header based on typical Google Cloud APIs
+      'X-Goog-Api-Key': this.apiKey,
       ...options.headers,
     };
 
@@ -43,23 +58,25 @@ export class JulesClient {
       throw new JulesClientError(response.status, `Jules API error (${response.status}): ${errorText}`);
     }
 
-    // Handle 204 No Content
     if (response.status === 204) {
       return null;
     }
 
-    return response.json();
+    const data = await response.json();
+    return data;
   }
 
-  async createSession(request: CreateSessionRequest) {
-    return this.fetchApi('/sessions', {
+  async createSession(request: CreateSessionRequest): Promise<JulesSession> {
+    const data = await this.fetchApi('/sessions', {
       method: 'POST',
       body: JSON.stringify(request)
     });
+    return JulesSessionSchema.parse(data);
   }
 
-  async getSession(sessionId: string) {
-    return this.fetchApi(`/sessions/${encodeURIComponent(sessionId)}`);
+  async getSession(sessionId: string): Promise<JulesSession> {
+    const data = await this.fetchApi(`/sessions/${encodeURIComponent(sessionId)}`);
+    return JulesSessionSchema.parse(data);
   }
 
   async getActivities(sessionId: string, pageToken?: string) {

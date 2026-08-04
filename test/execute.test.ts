@@ -17,20 +17,26 @@ vi.mock('../src/server/jules-client', () => {
 
 describe('execute', () => {
   const baseCtx: AdapterExecutionContext = {
-    adapterConfig: {
-      source: 'github',
-      repository: 'pilleo/test',
-      baseBranch: 'master',
-      pollIntervalSeconds: 10,
-      heartbeatPollWindowSeconds: 30
+    agent: {
+        id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
+        adapterConfig: {
+          source: 'github',
+          repository: 'pilleo/test',
+          baseBranch: 'master',
+          pollIntervalSeconds: 10,
+          heartbeatPollWindowSeconds: 30
+        }
     },
-    secrets: { JULES_API_KEY: 'test-key' },
-    task: { id: 'task-1', title: 'Test Task', description: 'Test desc', state: 'open', sourceBranch: '' },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
+    config: {},
+    context: {
+        secrets: { JULES_API_KEY: 'test-key' },
+        task: { id: 'task-1', title: 'Test Task', description: 'Test desc' }
+    },
     runId: 'run-1',
-    abortSignal: new AbortController().signal, // Needs to be aborted for the polling loop to exit early in tests
-    resolvedInteractions: [],
-    runNumber: 1
-  };
+    abortSignal: new AbortController().signal, // Testing property cast inside execution
+    onLog: vi.fn(),
+  } as any;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -40,7 +46,7 @@ describe('execute', () => {
     const abortCtrl = new AbortController();
     abortCtrl.abort(); // Abort immediately so loop doesn't block
 
-    const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal });
+    const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
     expect(res.exitCode).toBe(0);
     expect(res.clearSession).toBe(false);
     expect(res.sessionParams).toBeDefined();
@@ -59,7 +65,7 @@ describe('execute', () => {
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
   });
 
-  it('handles AWAITING_USER_FEEDBACK by returning interaction', async () => {
+  it('handles AWAITING_USER_FEEDBACK by returning question', async () => {
     (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'AWAITING_USER_FEEDBACK' });
     (JulesClient.prototype.getActivities as any).mockResolvedValueOnce({
        activities: [{ id: 'act-1', type: 'QUESTION', questionText: 'What color?', answered: false }]
@@ -67,8 +73,7 @@ describe('execute', () => {
 
     const res = await execute(baseCtx);
     expect(res.exitCode).toBe(0);
-    expect(res.interactions).toHaveLength(1);
-    expect(res.interactions![0].type).toBe('ask_user_questions');
-    expect(res.interactions![0].questions[0].text).toBe('What color?');
+    expect(res.question).toBeDefined();
+    expect(res.question!.prompt).toBe('What color?');
   });
 });

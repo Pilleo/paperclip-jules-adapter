@@ -24,84 +24,92 @@ vi.mock('../src/server/retry-policy', async (importOriginal) => {
 
 describe('execute retry policies', () => {
   const baseCtx: AdapterExecutionContext = {
-    adapterConfig: {
-      source: 'github', repository: 'test', baseBranch: 'master', pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30
+    agent: {
+        id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
+        adapterConfig: {
+          source: 'github', repository: 'test', baseBranch: 'master', pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30
+        }
     },
-    secrets: { JULES_API_KEY: 'test' },
-    task: { id: 'task-1', title: 'Task', state: 'open', sourceBranch: '' },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
+    config: {},
+    context: {
+        secrets: { JULES_API_KEY: 'test-key' },
+        task: { id: 'task-1', title: 'Task' }
+    },
     runId: 'run-1',
     abortSignal: new AbortController().signal,
     resolvedInteractions: [],
-    runNumber: 1
-  };
+    onLog: vi.fn()
+  } as any;
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('handles create session failure (transient) and returns RETRY_SCHEDULED', async () => {
-      (JulesClient.prototype.createSession as any).mockRejectedValueOnce({ status: 500, message: 'Server error' });
-      vi.mocked(classifyFailure).mockReturnValueOnce('transient');
-      vi.mocked(shouldRetry).mockReturnValueOnce(true);
+    (JulesClient.prototype.createSession as any).mockRejectedValueOnce({ status: 500, message: 'Server error' });
+    vi.mocked(classifyFailure).mockReturnValueOnce('transient');
+    vi.mocked(shouldRetry).mockReturnValueOnce(true);
 
-      const res = await execute(baseCtx);
+    const res = await execute(baseCtx);
 
-      expect(res.exitCode).toBe(1);
-      expect(res.errorCode).toBe('jules_transient_failure');
-      expect(res.sessionParams).toBeDefined();
+    expect(res.exitCode).toBe(1);
+    expect(res.errorCode).toBe('jules_transient_failure');
+    expect(res.sessionParams).toBeDefined();
 
-      const session = sessionCodec.decode(res.sessionParams!);
-      expect(session.phase).toBe('RETRY_SCHEDULED');
-      expect(session.attempt).toBe(1);
-      expect(session.failedSessions.length).toBe(1);
+    const session = sessionCodec.decode(res.sessionParams!);
+    expect(session.phase).toBe('RETRY_SCHEDULED');
+    expect(session.attempt).toBe(1);
+    expect(session.failedSessions.length).toBe(1);
   });
 
   it('handles polling failure (transient) within heartbeat and loop limits', async () => {
-      (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
-      (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 500, message: 'Poll failed' });
-      vi.mocked(classifyFailure).mockReturnValueOnce('transient');
+    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+    (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 500, message: 'Poll failed' });
+    vi.mocked(classifyFailure).mockReturnValueOnce('transient');
 
-      const abortCtrl = new AbortController();
-      setTimeout(() => abortCtrl.abort(), 10);
+    const abortCtrl = new AbortController();
+    setTimeout(() => abortCtrl.abort(), 10);
 
-      const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal });
-      expect(res.exitCode).toBe(0); // Ends via abort signal returning 0 with state
-      const session = sessionCodec.decode(res.sessionParams!);
-      expect(session.julesSessionId).toBe('sess-1');
+    const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
+    expect(res.exitCode).toBe(0); // Ends via abort signal returning 0 with state
+    const session = sessionCodec.decode(res.sessionParams!);
+    expect(session.julesSessionId).toBe('sess-1');
   });
 
   it('handles polling failure (fatal)', async () => {
-      (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
-      (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 401, message: 'Auth error' });
-      vi.mocked(classifyFailure).mockReturnValueOnce('configuration');
+    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+    (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 401, message: 'Auth error' });
+    vi.mocked(classifyFailure).mockReturnValueOnce('configuration');
 
-      const abortCtrl = new AbortController();
+    const abortCtrl = new AbortController();
 
-      const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal });
-      expect(res.exitCode).toBe(1);
-      expect(res.errorCode).toBe('jules_polling_error');
+    const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
+    expect(res.exitCode).toBe(1);
+    expect(res.errorCode).toBe('jules_polling_error');
   });
 
   it('handles COMPLETED state with false success (no PR)', async () => {
-       (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
-       (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'COMPLETED' });
+     (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+     (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'COMPLETED' });
 
-       const res = await execute(baseCtx);
-       expect(res.exitCode).toBe(0);
-       expect(res.summary).toBe('Jules completed without a PR');
+     const res = await execute(baseCtx);
+     expect(res.exitCode).toBe(0);
+     expect(res.question).toBeDefined(); // Now blocked with question
   });
 
   it('handles FAILED jules state with retry', async () => {
-        (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
-        (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
-        vi.mocked(shouldRetry).mockReturnValueOnce(true); // Retry the explicitly failed session
+      (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+      (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
+      vi.mocked(shouldRetry).mockReturnValueOnce(true); // Retry the explicitly failed session
 
-        const res = await execute(baseCtx);
+      const abortCtrl = new AbortController();
+      const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
 
-        expect(res.exitCode).toBe(1);
-        expect(res.errorCode).toBe('jules_transient_failure');
-        const session = sessionCodec.decode(res.sessionParams!);
-        expect(session.phase).toBe('RETRY_SCHEDULED');
+      expect(res.exitCode).toBe(1);
+      expect(res.errorCode).toBe('jules_transient_failure');
+      const session = sessionCodec.decode(res.sessionParams!);
+      expect(session.phase).toBe('RETRY_SCHEDULED');
   });
 
   it('handles FAILED jules state without retry (exhausted)', async () => {
@@ -124,7 +132,7 @@ describe('execute retry policies', () => {
       });
       (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'IN_PROGRESS' });
 
-      const session = {
+      const sessionParams = sessionCodec.encode({
           version: 1,
           paperclipIssueId: 'task-1',
           promptHash: 'old-hash',
@@ -135,12 +143,17 @@ describe('execute retry policies', () => {
           attempt: 1,
           failedSessions: [{ sessionId: 'sess-1', failedAt: new Date().toISOString(), message: 'failed', classification: 'transient' }],
           createdAt: new Date().toISOString()
-      };
+      } as any);
 
       const abortCtrl = new AbortController();
       setTimeout(() => abortCtrl.abort(), 10);
 
-      const res = await execute({ ...baseCtx, sessionParams: session as any, abortSignal: abortCtrl.signal });
+      const ctx = {
+          ...baseCtx,
+          runtime: { ...baseCtx.runtime, sessionParams },
+          abortSignal: abortCtrl.signal
+      } as any;
+      const res = await execute(ctx);
 
       expect(created).toBe(true);
       const newSession = sessionCodec.decode(res.sessionParams!);

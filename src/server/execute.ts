@@ -142,7 +142,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             attempt,
             failedSessions: [
               ...failedSessions,
-              { sessionId: 'unknown', failedAt: new Date().toISOString(), message: sanitizeError(error), classification }
+              { failedAt: new Date().toISOString(), message: sanitizeError(error), classification }
             ],
             createdAt: new Date().toISOString()
           }),

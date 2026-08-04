@@ -57,16 +57,16 @@ describe('Full Paperclip Continuation Lifecycle Integration', () => {
         });
 
         const abortCtrl1 = new AbortController();
-        setTimeout(() => abortCtrl1.abort(), 10); // Ends the loop bounding execution correctly
+        setTimeout(() => abortCtrl1.abort(), 10);
 
         let res = await execute({ ...baseCtx, abortSignal: abortCtrl1.signal } as any);
         expect(res.exitCode).toBe(0);
+        expect(res.clearSession).toBe(false); // Task remains active!
         let session = sessionCodec.decode(res.sessionParams!);
         expect(session.julesSessionId).toBe('123');
         expect(session.phase).toBe('RUNNING');
         expect(createdCount).toBe(1);
 
-        // Heartbeat 2: Host retains session Params, we resume safely
         step = 2;
 
         const abortCtrl2 = new AbortController();
@@ -79,12 +79,12 @@ describe('Full Paperclip Continuation Lifecycle Integration', () => {
         } as any);
 
         expect(res.exitCode).toBe(0);
+        expect(res.clearSession).toBe(false); // Task remains active!
         session = sessionCodec.decode(res.sessionParams!);
-        expect(session.julesSessionId).toBe('123'); // Still SAME session! No duplicate creations!
+        expect(session.julesSessionId).toBe('123');
         expect(session.phase).toBe('RUNNING');
-        expect(createdCount).toBe(1);
+        expect(createdCount).toBe(1); // No new session created!
 
-        // Heartbeat 3: Completes explicitly safely extracting PR and clearing session
         step = 3;
 
         const abortCtrl3 = new AbortController();
@@ -99,7 +99,7 @@ describe('Full Paperclip Continuation Lifecycle Integration', () => {
 
         expect(res.exitCode).toBe(0);
         expect(res.summary || "").toContain('Jules created PR: https://pr');
-        expect(res.clearSession).toBe(true);
-        expect(createdCount).toBe(1); // Ensures continuation strictly maintains context exactly across boundaries cleanly
+        expect(res.clearSession).toBe(true); // Now task completes!
+        expect(createdCount).toBe(1);
     });
 });

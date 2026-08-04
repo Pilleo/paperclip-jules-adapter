@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { JulesClient, JulesClientError } from '../src/server/jules-client';
+import { JulesClient, JulesClientError, extractPullRequestUrl } from '../src/server/jules-client';
+import { parseJulesSessionName, asJulesSessionId } from '../src/server/brands';
 
 describe('JulesClient', () => {
   let client: JulesClient;
@@ -38,7 +39,7 @@ describe('JulesClient', () => {
         body: JSON.stringify({ prompt: 'test prompt' })
       })
     );
-    expect(result).toEqual(mockResponse);
+    expect(result.id).toEqual('123');
   });
 
   it('throws JulesClientError on non-ok response', async () => {
@@ -54,8 +55,8 @@ describe('JulesClient', () => {
         text: async () => 'Not found',
       });
 
-    await expect(client.getSession('invalid')).rejects.toThrow(JulesClientError);
-    await expect(client.getSession('invalid')).rejects.toThrow(/404/);
+    await expect(client.getSession(asJulesSessionId('invalid'))).rejects.toThrow(JulesClientError);
+    await expect(client.getSession(asJulesSessionId('invalid'))).rejects.toThrow(/404/);
   });
 
   it('getSession sends correct request', async () => {
@@ -65,17 +66,17 @@ describe('JulesClient', () => {
       json: async () => mockResponse,
     });
 
-    const result = await client.getSession('sessions/123');
+    const result = await client.getSession(asJulesSessionId('123'));
 
     expect(global.fetch).toHaveBeenCalledWith(
-      'https://jules.googleapis.com/v1alpha/sessions/sessions%2F123',
+      'https://jules.googleapis.com/v1alpha/sessions/123',
       expect.objectContaining({
         headers: expect.objectContaining({
             'X-Goog-Api-Key': apiKey,
         })
       })
     );
-    expect(result).toEqual(mockResponse);
+    expect(result.id).toEqual('123');
   });
 
   it('sendMessage sends correct request', async () => {
@@ -84,10 +85,10 @@ describe('JulesClient', () => {
         json: async () => ({}),
       });
 
-      await client.sendMessage('sessions/123', { message: 'hello' });
+      await client.sendMessage(asJulesSessionId('123'), { message: 'hello' });
 
       expect(global.fetch).toHaveBeenCalledWith(
-        'https://jules.googleapis.com/v1alpha/sessions/sessions%2F123:sendMessage',
+        'https://jules.googleapis.com/v1alpha/sessions/123:sendMessage',
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ message: 'hello' })
@@ -101,14 +102,48 @@ describe('JulesClient', () => {
           json: async () => ({}),
         });
 
-        await client.approvePlan('sessions/123', { approved: true });
+        await client.approvePlan(asJulesSessionId('123'), { approved: true });
 
         expect(global.fetch).toHaveBeenCalledWith(
-          'https://jules.googleapis.com/v1alpha/sessions/sessions%2F123:approvePlan',
+          'https://jules.googleapis.com/v1alpha/sessions/123:approvePlan',
           expect.objectContaining({
             method: 'POST',
             body: JSON.stringify({ approved: true })
           })
         );
+  });
+
+  describe('extractPullRequestUrl', () => {
+     it('extracts successfully', () => {
+         const url = extractPullRequestUrl({
+             name: parseJulesSessionName('sessions/1'),
+             id: asJulesSessionId('1'),
+             rawOutputs: [
+                 { type: 'unrelated' },
+                 { pullRequest: { url: 'http://my-pr' } }
+             ]
+         });
+         expect(url).toBe('http://my-pr');
+     });
+
+     it('returns undefined if not found', () => {
+         const url = extractPullRequestUrl({
+             name: parseJulesSessionName('sessions/1'),
+             id: asJulesSessionId('1'),
+             rawOutputs: [
+                 { type: 'unrelated' },
+                 { pullRequest: { url_invalid_key: 'http://my-pr' } }
+             ]
+         });
+         expect(url).toBeUndefined();
+     });
+
+     it('returns undefined if no outputs', () => {
+          const url = extractPullRequestUrl({
+              name: parseJulesSessionName('sessions/1'),
+              id: asJulesSessionId('1')
+          });
+          expect(url).toBeUndefined();
+      });
   });
 });

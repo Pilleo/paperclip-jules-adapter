@@ -32,6 +32,16 @@ describe('State Machine', () => {
     });
   });
 
+  it('handles AWAITING_PLAN_APPROVAL', () => {
+    const res = handleJulesState('AWAITING_PLAN_APPROVAL', false);
+    expect(res).toEqual({
+      nextPhase: 'WAITING_FOR_PLAN_APPROVAL',
+      requiresReturn: true,
+      isTerminal: false,
+      clearSession: false
+    });
+  });
+
   it('handles COMPLETED with PR', () => {
     const res = handleJulesState('COMPLETED', true);
     expect(res).toEqual({

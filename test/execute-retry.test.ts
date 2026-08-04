@@ -64,7 +64,7 @@ describe('execute retry policies', () => {
   });
 
   it('handles polling failure (transient) within heartbeat and loop limits', async () => {
-    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
     (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 500, message: 'Poll failed' });
     vi.mocked(classifyFailure).mockReturnValueOnce('transient');
 
@@ -74,11 +74,11 @@ describe('execute retry policies', () => {
     const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
     expect(res.exitCode).toBe(0); // Ends via abort signal returning 0 with state
     const session = sessionCodec.decode(res.sessionParams!);
-    expect(session.julesSessionId).toBe('sess-1');
+    expect(session.julesSessionId).toBe('123');
   });
 
   it('handles polling failure (fatal)', async () => {
-    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
     (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 401, message: 'Auth error' });
     vi.mocked(classifyFailure).mockReturnValueOnce('configuration');
 
@@ -90,7 +90,7 @@ describe('execute retry policies', () => {
   });
 
   it('handles COMPLETED state with false success (no PR)', async () => {
-     (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+     (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
      (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'COMPLETED' });
 
      const res = await execute(baseCtx);
@@ -99,7 +99,7 @@ describe('execute retry policies', () => {
   });
 
   it('handles FAILED jules state with retry', async () => {
-      (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+      (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
       (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
       vi.mocked(shouldRetry).mockReturnValueOnce(true); // Retry the explicitly failed session
 
@@ -113,7 +113,7 @@ describe('execute retry policies', () => {
   });
 
   it('handles FAILED jules state without retry (exhausted)', async () => {
-        (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ name: 'sess-1' });
+        (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
         (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
         vi.mocked(shouldRetry).mockReturnValueOnce(false);
 
@@ -128,7 +128,7 @@ describe('execute retry policies', () => {
       let created = false;
       (JulesClient.prototype.createSession as any).mockImplementationOnce(() => {
          created = true;
-         return Promise.resolve({ name: 'sess-2' });
+         return Promise.resolve({ id: '124', name: 'sessions/124' });
       });
       (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'IN_PROGRESS' });
 
@@ -157,6 +157,6 @@ describe('execute retry policies', () => {
 
       expect(created).toBe(true);
       const newSession = sessionCodec.decode(res.sessionParams!);
-      expect(newSession.julesSessionId).toBe('sess-2');
+      expect(newSession.julesSessionId).toBe('124');
   });
 });

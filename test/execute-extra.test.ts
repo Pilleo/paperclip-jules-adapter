@@ -70,7 +70,7 @@ describe('execute extra branch coverage', () => {
            attempt: 1,
            failedSessions: [],
            createdAt: new Date().toISOString()
-       });
+       } as any);
 
        const abortCtrl = new AbortController();
        setTimeout(() => abortCtrl.abort(), 10);
@@ -84,70 +84,6 @@ describe('execute extra branch coverage', () => {
 
        expect(baseCtx.onLog).toHaveBeenCalledWith('stderr', expect.stringContaining('[WARN] Task identity changed. Using original prompt hash for session sess-1'));
        expect(decoded.promptHash).toBe('old-hash'); // Remains same
-  });
-
-  it('processes resolved interaction and continues', async () => {
-        (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ name: 'sess-1', state: 'IN_PROGRESS' });
-        vi.mocked(processResolvedInteraction).mockResolvedValueOnce(true);
-
-        const sessionParams = sessionCodec.encode({
-            version: 1,
-            paperclipIssueId: 'task-1',
-            promptHash: 'some-hash',
-            repository: 'test',
-            source: 'github',
-            baseBranch: 'master',
-            phase: 'WAITING_FOR_FEEDBACK',
-            julesSessionId: 'sess-1',
-            attempt: 1,
-            failedSessions: [],
-            pendingInteraction: { type: 'user_feedback', julesActivityId: 'act-1', question: 'q', createdAt: '' },
-            createdAt: new Date().toISOString()
-        } as any);
-
-        const abortCtrl = new AbortController();
-        setTimeout(() => abortCtrl.abort(), 10);
-
-        const res = await execute({
-           ...baseCtx,
-           resolvedInteractions: [{ questionId: 'act-1', answer: 'a' }],
-           runtime: { ...baseCtx.runtime, sessionParams },
-           abortSignal: abortCtrl.signal
-        } as any);
-
-        const decoded = sessionCodec.decode(res.sessionParams!);
-        expect(decoded.pendingInteraction).toBeUndefined();
-        expect(decoded.phase).toBe('RUNNING'); // should have changed back to running
-  });
-
-  it('handles WAITING_FOR_PLAN_APPROVAL by returning interaction', async () => {
-      (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ name: 'sess-1', state: 'AWAITING_PLAN_APPROVAL' });
-      vi.mocked(handleAwaitingPlanApproval).mockResolvedValueOnce({
-          pendingInteraction: { type: 'plan_approval', julesActivityId: 'p-1', question: 'p', createdAt: '' },
-          paperclipInteraction: { type: 'ask_user_questions', questions: [] }
-      });
-
-      const sessionParams = sessionCodec.encode({
-          version: 1,
-          paperclipIssueId: 'task-1',
-          promptHash: 'some-hash',
-          repository: 'test',
-          source: 'github',
-          baseBranch: 'master',
-          phase: 'RUNNING',
-          julesSessionId: 'sess-1',
-          attempt: 1,
-          failedSessions: [],
-          createdAt: new Date().toISOString()
-      });
-
-      const res = await execute({
-          ...baseCtx,
-          runtime: { ...baseCtx.runtime, sessionParams }
-      } as any);
-      expect(res.question).toBeDefined();
-      const decoded = sessionCodec.decode(res.sessionParams!);
-      expect(decoded.pendingInteraction?.type).toBe('plan_approval');
   });
 
   it('handles early crash creation returning jules_create_failure', async () => {

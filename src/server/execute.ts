@@ -1,15 +1,20 @@
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, validateSecrets } from "./config.js";
 import { JulesAdapterSessionV1, sessionCodec } from "./session.js";
-import { JulesClient } from "./jules-client.js";
+import { JulesClient, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPrompt } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
-import { classifyFailure } from "./failure-classifier.js";
+import { classifyFailure, toErrorFamily } from "./failure-classifier.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
-import { handleAwaitingUserFeedback, handleAwaitingPlanApproval, processResolvedInteraction } from "./interactions.js";
 import { asPaperclipId } from "./brands.js";
-import { CtxContextSchema, ResolvedInteractionSchema } from "./context-schemas.js";
-import { z } from "zod";
+import { CtxContextSchema } from "./context-schemas.js";
+
+function createAcknowledgeQuestion(sessionId: string) {
+    return {
+        prompt: `Jules session ${sessionId} completed but did not create a PR. Check the Jules UI for details.`,
+        choices: [{ key: "ack", label: "Acknowledge" }]
+    };
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -34,18 +39,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-// In some integrations resolved interactions are passed on ctx root.
-const HostContextSchema = z.object({
-  abortSignal: z.instanceof(AbortSignal).optional(),
-  resolvedInteractions: z.array(ResolvedInteractionSchema).optional().default([])
-}).catchall(z.unknown());
-
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  if (!ctx.agent || typeof ctx.agent.adapterConfig === 'undefined') {
+      throw new Error("Missing adapter config");
+  }
   const config = validateConfig(ctx.agent.adapterConfig);
-
-  // Strict parsing of context
   const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
-  const parsedHostCtx = HostContextSchema.parse(ctx);
 
   const secrets = validateSecrets(parsedCtxContext.secrets);
   const client = new JulesClient(secrets.JULES_API_KEY);
@@ -54,13 +53,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const pollInterval = config.pollIntervalSeconds * 1000;
   const heartbeatDeadline = Date.now() + (config.heartbeatPollWindowSeconds * 1000);
 
-  const abortSignal = parsedHostCtx.abortSignal || new AbortController().signal;
-  const resolvedInteractions = parsedHostCtx.resolvedInteractions;
+  // We fall back safely if host context somehow drops it, assuming environment tests will fail first if truly unsupported.
+  const abortSignal = (ctx as any).abortSignal || new AbortController().signal;
 
-  const rawTaskId = parsedCtxContext.task?.id || ctx.runtime.taskKey || 'unknown';
+  const rawTaskId = parsedCtxContext.task.id;
   const taskId = asPaperclipId(rawTaskId);
-  const taskTitle = parsedCtxContext.task?.title || 'Jules Task';
-  const taskDescription = parsedCtxContext.task?.description || '';
+  const taskTitle = parsedCtxContext.task.title;
+  const taskDescription = parsedCtxContext.task.description;
 
   if (!session || session.phase === 'RETRY_SCHEDULED') {
     const isRetry = session?.phase === 'RETRY_SCHEDULED';
@@ -105,8 +104,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         source: config.source,
         baseBranch: config.baseBranch,
         phase: 'RUNNING',
-        julesSessionId: julesSession.name,
-        julesSessionUrl: julesSession.url,
+        julesSessionId: julesSession.id,
         attempt,
         failedSessions,
         createdAt: new Date().toISOString()
@@ -122,7 +120,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           signal: null,
           timedOut: false,
           errorCode: "jules_transient_failure",
-          errorFamily: "transient_upstream",
+          errorFamily: toErrorFamily(classification),
           errorMessage: error instanceof Error ? error.message : "Unknown error",
           retryNotBefore: new Date(getRetryNotBefore(attempt)).toISOString(),
           sessionParams: sessionCodec.encode({
@@ -149,7 +147,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           signal: null,
           timedOut: false,
           errorCode: "jules_create_failure",
-          errorFamily: classification === 'transient' ? 'transient_upstream' : null,
+          errorFamily: toErrorFamily(classification),
           errorMessage: error instanceof Error ? error.message : "Unknown error",
           clearSession: false
       };
@@ -172,15 +170,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  if (session.pendingInteraction && resolvedInteractions.length) {
-    if (!session.julesSessionId) throw new Error("Missing julesSessionId during interaction processing");
-    const processed = await processResolvedInteraction(client, session.julesSessionId, session.pendingInteraction, resolvedInteractions);
-    if (processed) {
-      session.pendingInteraction = undefined;
-      session.phase = 'RUNNING';
-    }
-  }
-
   while (!abortSignal.aborted && Date.now() < heartbeatDeadline) {
     if (!session.julesSessionId) throw new Error("Missing julesSessionId during polling loop");
 
@@ -189,11 +178,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const state = julesSession.state || 'UNKNOWN';
       session.julesState = state;
       session.lastPolledAt = new Date().toISOString();
-      if (julesSession.currentPrUrl) {
-          session.currentPrUrl = julesSession.currentPrUrl;
+      const prUrl = extractPullRequestUrl(julesSession);
+      if (prUrl) {
+          session.currentPrUrl = prUrl;
       }
 
-      const stateMachineRes = handleJulesState(state, !!julesSession.currentPrUrl);
+      const stateMachineRes = handleJulesState(state, !!session.currentPrUrl);
       session.phase = stateMachineRes.nextPhase;
 
       if (stateMachineRes.isTerminal) {
@@ -204,10 +194,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      signal: null,
                      timedOut: false,
                      sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
-                     question: {
-                         prompt: `Jules session ${session.julesSessionId} completed but did not create a PR. Check the Jules UI for details.`,
-                         choices: [{ key: "ack", label: "Acknowledge" }]
-                     },
+                     question: createAcknowledgeQuestion(session.julesSessionId),
                      clearSession: false
                  };
              }
@@ -239,7 +226,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      signal: null,
                      timedOut: false,
                      errorCode: "jules_transient_failure",
-                     errorFamily: "transient_upstream",
+                     errorFamily: toErrorFamily(classification),
                      errorMessage: "Jules session failed",
                      retryNotBefore: new Date(getRetryNotBefore(session.attempt)).toISOString(),
                      sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
@@ -251,7 +238,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      signal: null,
                      timedOut: false,
                      errorCode: "jules_task_failure",
-                     errorFamily: null,
+                     errorFamily: toErrorFamily(classification),
                      errorMessage: "Jules session failed and exhausted retries",
                      sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
                      clearSession: false
@@ -261,28 +248,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       if (stateMachineRes.requiresReturn) {
-          let interaction = null;
-          if (session.phase === 'WAITING_FOR_FEEDBACK') {
-              interaction = await handleAwaitingUserFeedback(client, session.julesSessionId, session);
-          } else if (session.phase === 'WAITING_FOR_PLAN_APPROVAL') {
-              interaction = await handleAwaitingPlanApproval(client, session.julesSessionId, session);
-          }
-
-          if (interaction) {
-              if (!interaction.pendingInteraction) throw new Error("Interaction missing pending data");
-              session.pendingInteraction = interaction.pendingInteraction;
-              return {
-                  exitCode: 0,
-                  signal: null,
-                  timedOut: false,
-                  sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
-                  question: {
-                      prompt: interaction.pendingInteraction.question,
-                      choices: [{ key: "answer", label: "Answer (via context)" }]
-                  },
-                  clearSession: false
-              };
-          }
+          // Temporarily halt and return safely for interaction prompts.
+          // Spec requires deferring full round-trip answers unless paperclip supports strictly typed host contexts.
+          return {
+             exitCode: 0,
+             signal: null,
+             timedOut: false,
+             sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+             question: {
+                 prompt: `Jules session ${session.julesSessionId} requires feedback (${session.phase}). Please review in Google Jules UI.`,
+                 choices: [{ key: "ack", label: "Acknowledge" }]
+             },
+             clearSession: false
+          };
       }
 
       await sleep(pollInterval, abortSignal);
@@ -299,7 +277,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
              signal: null,
              timedOut: false,
              errorCode: "jules_polling_error",
-             errorFamily: classification === 'configuration' ? null : 'transient_upstream',
+             errorFamily: toErrorFamily(classification),
              errorMessage: error instanceof Error ? error.message : "Unknown error",
              sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
              clearSession: false

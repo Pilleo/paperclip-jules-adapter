@@ -1,5 +1,7 @@
 import { JulesClientError } from './jules-client.js';
 
+export type AdapterExecutionErrorFamily = "transient_upstream" | "provider_quota" | "model_refusal" | "refresh_token_reused" | "refresh_token_expired" | "refresh_token_invalidated";
+
 export type FailureClassification = "transient" | "configuration" | "task" | "unknown";
 
 export function classifyFailure(error: unknown): FailureClassification {
@@ -11,7 +13,7 @@ export function classifyFailure(error: unknown): FailureClassification {
       return "configuration";
     }
     if (error.status === 400 || error.status === 422) {
-      return "task"; // Bad request or unprocessable entity - likely task related issue
+      return "task"; // Bad request or unprocessable entity
     }
   }
 
@@ -28,4 +30,15 @@ export function classifyFailure(error: unknown): FailureClassification {
   }
 
   return "unknown";
+}
+
+export function toErrorFamily(classification: FailureClassification): AdapterExecutionErrorFamily | null {
+  switch (classification) {
+    case "transient":
+      return "transient_upstream";
+    case "configuration":
+    case "task":
+    case "unknown":
+      return null;
+  }
 }

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { JulesSessionId, JulesActivityId, PrUrl, asJulesSessionId, asPrUrl } from './brands.js';
+import { JulesSessionName, JulesSessionId, JulesActivityId, PrUrl, parseJulesSessionName, toJulesSessionId, asPrUrl } from './brands.js';
 
 export interface CreateSessionRequest {
   title?: string | undefined;
@@ -36,13 +36,18 @@ export const JulesStateSchema = z.enum([
   'FAILED'
 ]).or(z.string());
 
+const PullRequestOutputSchema = z.object({
+  pullRequest: z.object({
+    url: z.string().url()
+  }).catchall(z.unknown())
+}).catchall(z.unknown());
+
 export const JulesSessionSchema = z.object({
   name: z.string().min(1),
-  url: z.string().optional(),
   state: JulesStateSchema.optional(),
-  currentPrUrl: z.string().url().optional(),
+  outputs: z.array(z.unknown()).optional(),
   errorInfo: z.unknown().optional()
-});
+}).catchall(z.unknown());
 
 export const JulesActivitySchema = z.object({
   id: z.string().min(1),
@@ -51,19 +56,33 @@ export const JulesActivitySchema = z.object({
   answered: z.boolean().optional(),
   planSummary: z.string().optional(),
   approved: z.boolean().optional()
-});
+}).catchall(z.unknown());
 
 export const JulesActivitiesResponseSchema = z.object({
   activities: z.array(JulesActivitySchema).optional()
-});
+}).catchall(z.unknown());
 
 export type JulesSessionRaw = z.infer<typeof JulesSessionSchema>;
+
 export interface JulesSession {
-    name: JulesSessionId;
-    url?: string | undefined;
+    name: JulesSessionName;
+    id: JulesSessionId;
     state?: string | undefined;
-    currentPrUrl?: PrUrl | undefined;
     errorInfo?: unknown | undefined;
+    rawOutputs?: unknown[] | undefined;
+}
+
+export function extractPullRequestUrl(session: JulesSession): PrUrl | undefined {
+    if (!session.rawOutputs || !Array.isArray(session.rawOutputs)) {
+        return undefined;
+    }
+    for (const output of session.rawOutputs) {
+        const parsed = PullRequestOutputSchema.safeParse(output);
+        if (parsed.success && parsed.data.pullRequest.url) {
+            return asPrUrl(parsed.data.pullRequest.url);
+        }
+    }
+    return undefined;
 }
 
 export class JulesClient {
@@ -104,12 +123,13 @@ export class JulesClient {
   }
 
   private mapSession(raw: JulesSessionRaw): JulesSession {
+      const name = parseJulesSessionName(raw.name);
       return {
-          name: asJulesSessionId(raw.name),
-          url: raw.url,
+          name,
+          id: toJulesSessionId(name),
           state: raw.state,
-          currentPrUrl: raw.currentPrUrl ? asPrUrl(raw.currentPrUrl) : undefined,
-          errorInfo: raw.errorInfo
+          errorInfo: raw.errorInfo,
+          rawOutputs: raw.outputs
       };
   }
 

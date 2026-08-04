@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { asPaperclipId, asJulesSessionId, asJulesActivityId, asPrUrl } from '../src/server/brands';
+import { asPaperclipId, asJulesSessionId, asJulesSessionName, asJulesActivityId, asPrUrl, parseJulesSessionName } from '../src/server/brands';
 
 describe('Brands Coverage', () => {
     it('throws appropriately on invalid branded ids', () => {
         expect(() => asPaperclipId('')).toThrow('Invalid PaperclipId');
         expect(() => asJulesSessionId('')).toThrow('Invalid JulesSessionId');
+        expect(() => asJulesSessionName('')).toThrow('Invalid JulesSessionName');
+        expect(() => parseJulesSessionName('')).toThrow('Invalid JulesSessionName');
         expect(() => asJulesActivityId('')).toThrow('Invalid JulesActivityId');
         expect(() => asPrUrl('not-http')).toThrow('Invalid PrUrl');
     });
@@ -12,6 +14,7 @@ describe('Brands Coverage', () => {
     it('creates branded ids validly', () => {
         expect(asPaperclipId('valid')).toBe('valid');
         expect(asJulesSessionId('valid')).toBe('valid');
+        expect(asJulesSessionName('valid')).toBe('valid');
         expect(asJulesActivityId('valid')).toBe('valid');
         expect(asPrUrl('http://valid')).toBe('http://valid');
     });

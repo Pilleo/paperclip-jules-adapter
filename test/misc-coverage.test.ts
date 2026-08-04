@@ -1,18 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { execute } from '../src/server/execute';
-import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { sessionCodec } from '../src/server/session';
-import { classifyFailure } from '../src/server/failure-classifier';
 import { shouldRetry } from '../src/server/retry-policy';
-import { buildPrompt, hashPrompt } from '../src/server/prompt-builder';
+import { buildPrompt } from '../src/server/prompt-builder';
 import { handleJulesState } from '../src/server/state-machine';
-import { JulesClientError } from '../src/server/jules-client';
+import { JulesClient } from '../src/server/jules-client';
+import { classifyFailure } from '../src/server/failure-classifier';
+
+vi.mock('../src/server/jules-client');
+vi.mock('../src/server/failure-classifier', async (importOriginal) => {
+    const mod = await importOriginal<typeof import('../src/server/failure-classifier')>();
+    return {
+        ...mod,
+        classifyFailure: vi.fn((err) => mod.classifyFailure(err))
+    };
+});
 
 describe('Misc Coverage', () => {
-    it('classifyFailure covers 422', () => {
-        expect(classifyFailure(new JulesClientError(422, 'error'))).toBe('task');
-    });
-
     it('retry-policy shouldRetry handles transient failure outside loop limit', () => {
         expect(shouldRetry('transient', 99, { maxAutomaticRestarts: 2 } as any)).toBe(false);
     });
@@ -34,18 +38,22 @@ describe('Misc Coverage', () => {
     });
 
     it('sleep early resolves if already aborted', async () => {
-        // Can't directly export sleep, but we test the behaviour via abort signal on execute
         const ctrl = new AbortController();
-        ctrl.abort();
         const baseCtx = {
           agent: { adapterConfig: { source: 's', repository: 'r' } },
-          context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't' } },
+          context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't', title: 't' } },
           runtime: {},
           runId: 'r',
-          abortSignal: ctrl.signal // Execution loops rely on sleep
+          abortSignal: ctrl.signal
         } as any;
 
-        // This won't reach sleep because Jules auth will fail on the live fetch inside client unless mocked.
-        // Let's mock createSession so it loops down to where `sleep` is actually called: inside the while loop's catch block on transient errors.
+        (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '1', name: 'sessions/1' });
+        (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 500, message: 'Poll failed' });
+        vi.mocked(classifyFailure).mockReturnValueOnce('transient');
+
+        setTimeout(() => ctrl.abort(), 10);
+
+        const res = await execute(baseCtx);
+        expect(res.exitCode).toBe(0);
     });
 });

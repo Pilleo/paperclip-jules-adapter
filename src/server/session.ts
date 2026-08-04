@@ -85,11 +85,18 @@ export interface JulesAdapterSessionV1 {
 export type SerializedSessionParams = NonNullable<AdapterExecutionResult["sessionParams"]>;
 
 export function serializeSession(session: JulesAdapterSessionV1): SerializedSessionParams {
-  // Parsing via zod guarantees JSON compatibility, making it safe to typecast to the required SDK shape.
   return JulesAdapterSessionV1Schema.parse(session) as SerializedSessionParams;
 }
 
 export const sessionCodec = {
+  deserialize(data: unknown): Record<string, unknown> | null {
+      if (data === null || data === undefined) return null;
+      return JulesAdapterSessionV1Schema.parse(data) as Record<string, unknown>;
+  },
+  serialize(session: Record<string, unknown> | null): Record<string, unknown> | null {
+      if (session === null || session === undefined) return null;
+      return JulesAdapterSessionV1Schema.parse(session) as Record<string, unknown>;
+  },
   decode(data: unknown): JulesAdapterSessionV1 {
     if (typeof data !== 'object' || data === null) {
       throw new Error('Invalid session data format');
@@ -117,7 +124,8 @@ export const sessionCodec = {
     return JulesAdapterSessionV1Schema.parse(session);
   },
 
-  getDisplayId(session: JulesAdapterSessionV1): string | undefined {
-    return session.julesSessionId;
+  getDisplayId(session: Record<string, unknown> | null): string | null {
+    if (!session) return null;
+    return session['julesSessionId'] as string || null;
   }
 };

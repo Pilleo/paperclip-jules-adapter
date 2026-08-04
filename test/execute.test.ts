@@ -1,9 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
-import { JulesClient, extractPullRequestUrl } from '../src/server/jules-client';
+import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
-import { parseJulesSessionName, asJulesSessionId } from '../src/server/brands';
 
 vi.mock('../src/server/jules-client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/server/jules-client')>();
@@ -60,7 +59,7 @@ describe('execute', () => {
     expect(session.phase).toBe('RUNNING');
   });
 
-  it('returns terminal result on COMPLETED state', async () => {
+  it('returns blocking PR review question on COMPLETED state with PR', async () => {
     (JulesClient.prototype.getSession as any).mockResolvedValueOnce({
         state: 'COMPLETED',
         rawOutputs: [{ pullRequest: { url: 'http://pr/1' } }]
@@ -68,7 +67,9 @@ describe('execute', () => {
 
     const res = await execute(baseCtx);
     expect(res.exitCode).toBe(0);
-    expect(res.clearSession).toBe(true);
+    expect(res.clearSession).toBe(false);
+    expect(res.question).toBeDefined();
+    expect(res.question!.prompt).toContain('Please review and merge it');
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
   });
 

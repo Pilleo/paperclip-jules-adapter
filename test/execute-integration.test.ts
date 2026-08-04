@@ -61,12 +61,12 @@ describe('Full Paperclip Continuation Lifecycle Integration', () => {
 
         let res = await execute({ ...baseCtx, abortSignal: abortCtrl1.signal } as any);
         expect(res.exitCode).toBe(0);
-        expect(res.clearSession).toBe(false); // Task remains active!
         let session = sessionCodec.decode(res.sessionParams!);
         expect(session.julesSessionId).toBe('123');
         expect(session.phase).toBe('RUNNING');
         expect(createdCount).toBe(1);
 
+        // Heartbeat 2: Host retains session Params, we resume safely
         step = 2;
 
         const abortCtrl2 = new AbortController();
@@ -79,12 +79,12 @@ describe('Full Paperclip Continuation Lifecycle Integration', () => {
         } as any);
 
         expect(res.exitCode).toBe(0);
-        expect(res.clearSession).toBe(false); // Task remains active!
         session = sessionCodec.decode(res.sessionParams!);
         expect(session.julesSessionId).toBe('123');
         expect(session.phase).toBe('RUNNING');
-        expect(createdCount).toBe(1); // No new session created!
+        expect(createdCount).toBe(1);
 
+        // Heartbeat 3: Completes and blocks requiring PR review
         step = 3;
 
         const abortCtrl3 = new AbortController();
@@ -99,7 +99,9 @@ describe('Full Paperclip Continuation Lifecycle Integration', () => {
 
         expect(res.exitCode).toBe(0);
         expect(res.summary || "").toContain('Jules created PR: https://pr');
-        expect(res.clearSession).toBe(true); // Now task completes!
+        expect(res.clearSession).toBe(false); // Does not clear session so task remains active for PR review!
+        expect(res.question).toBeDefined();
+        expect(res.question!.prompt).toContain('Please review and merge it');
         expect(createdCount).toBe(1);
     });
 });

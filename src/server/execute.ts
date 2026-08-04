@@ -5,15 +5,22 @@ import { JulesClient, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPrompt } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
-import { sanitizeError } from "./error-sanitizer.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
 import { asPaperclipId } from "./brands.js";
 import { CtxContextSchema, HostContextSchema } from "./context-schemas.js";
+import { sanitizeError } from "./error-sanitizer.js";
 
 function createAcknowledgeQuestion(sessionId: string) {
     return {
         prompt: `Jules session ${sessionId} completed but did not create a PR. Check the Jules UI for details.`,
         choices: [{ key: "ack", label: "Acknowledge" }]
+    };
+}
+
+function createPrReviewQuestion(prUrl: string) {
+    return {
+        prompt: `Jules created a PR: ${prUrl}. Please review and merge it. This task will remain in progress until manually completed or canceled.`,
+        choices: [{ key: "ack", label: "Acknowledge (keeps task active)" }]
     };
 }
 
@@ -82,7 +89,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       title: taskTitle,
       description: taskDescription,
       isRetry,
-      failedSessionReference: failedSessionId ? `Session ID: ${failedSessionId}` : undefined,
+      failedSessionUrl: failedSessionId ? `Session ID: ${failedSessionId}` : undefined,
       failedSessionMessage
     };
 
@@ -135,7 +142,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             attempt,
             failedSessions: [
               ...failedSessions,
-              { sessionId: undefined, failedAt: new Date().toISOString(), message: sanitizeError(error), classification }
+              { sessionId: 'unknown', failedAt: new Date().toISOString(), message: sanitizeError(error), classification }
             ],
             createdAt: new Date().toISOString()
           }),
@@ -200,6 +207,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  };
              }
 
+             // Jules completed and we have a PR.
+             // Do NOT clear session or exit successfully, as the PR needs review/merge first.
+             // Surface a question confirming to humans that the PR is ready.
              return {
                  exitCode: 0,
                  signal: null,
@@ -208,7 +218,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  sessionDisplayId: session.julesSessionId || null,
                  summary: `Jules created PR: ${session.currentPrUrl}`,
                  resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl },
-                 clearSession: true
+                 question: createPrReviewQuestion(session.currentPrUrl!),
+                 clearSession: false
              };
          } else if (session.phase === 'FAILED') {
              const failureDetails = julesSession.errorInfo || {};
@@ -219,7 +230,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  session.failedSessions.push({
                      sessionId: session.julesSessionId,
                      failedAt: new Date().toISOString(),
-                     message: summarizeJulesFailure(failureDetails),
+                     message: sanitizeError(summarizeJulesFailure(failureDetails)),
                      classification
                  });
                  session.phase = 'RETRY_SCHEDULED';

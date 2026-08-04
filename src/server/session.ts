@@ -17,7 +17,7 @@ export const SessionPhaseSchema = z.enum([
 ]);
 
 export const FailedSessionSchema = z.object({
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
   failedAt: z.string(),
   message: z.string(),
   classification: z.enum(["transient", "configuration", "task", "unknown"])
@@ -64,7 +64,7 @@ export interface JulesAdapterSessionV1 {
   julesState?: string | undefined;
   attempt: number;
   failedSessions: Array<{
-    sessionId: string;
+    sessionId?: string | undefined;
     failedAt: string;
     message: string;
     classification: "transient" | "configuration" | "task" | "unknown";

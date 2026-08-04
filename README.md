@@ -2,11 +2,20 @@
 
 The Jules adapter enables running Google Jules asynchronously via Paperclip's orchestration engine correctly mapping long-running multi-day sessions inside bounded execution context loops.
 
-## V0.1 Interactive Scope
+## Scope: v0.1.0-alpha
 
-**Important:** Automatic free-text answer forwarding and explicitly resolving plan approval choices dynamically via `sendMessage` and `approvePlan` are explicitly deferred until the pinned Paperclip interaction-continuation SDK contracts are integrated safely providing explicit type safe payloads matching `AdapterExecutionContext` requirements natively.
+**This is an experimental non-interactive Jules adapter foundation.**
 
-V0.1 correctly detects Jules feedback/plan-approval states and surfaces a generic Paperclip acknowledgement prompt natively halting the loop execution efficiently, directing humans safely to the Jules Google UI appropriately tracking `WAITING_FOR_FEEDBACK` bounds accurately.
+It supports:
+- Session creation
+- Bounded polling inside Paperclip heartbeats
+- Terminal PR reporting
+- State persistence and retry bounds.
+
+**It does not yet support Paperclip-to-Jules answer forwarding or plan approval.**
+Host integration remains subject to a Paperclip loader/continuation contract test. Answers and plan approvals must currently be completed manually in the Jules UI.
+
+Interactive sessions are correctly detected, and the adapter will safely return an Acknowledgement prompt halting loop execution and directing humans gracefully to the Google Jules UI to fulfill pending blocks manually without dropping context natively on resumption.
 
 ## Architecture
 

@@ -7,7 +7,7 @@ export interface PromptContext {
   title: string;
   description: string;
   isRetry: boolean;
-  failedSessionUrl?: string | undefined;
+  failedSessionReference?: string | undefined;
   failedSessionMessage?: string | undefined;
 }
 
@@ -29,7 +29,7 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
 
   if (ctx.isRetry) {
     prompt += `A previous Jules session failed unexpectedly.\n`;
-    prompt += `Previous session: ${ctx.failedSessionUrl || 'Unknown'}\n`;
+    prompt += `Previous session: ${ctx.failedSessionReference || 'Unknown'}\n`;
     prompt += `Failure: ${ctx.failedSessionMessage || 'Unknown error'}\n\n`;
     prompt += `Start cleanly from the current base branch. Do not assume the previous session's workspace exists. Preserve the original task and acceptance criteria.\n`;
   }

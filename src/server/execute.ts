@@ -5,6 +5,7 @@ import { JulesClient, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPrompt } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
+import { sanitizeError } from "./error-sanitizer.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
 import { asPaperclipId } from "./brands.js";
 import { CtxContextSchema, HostContextSchema } from "./context-schemas.js";
@@ -81,7 +82,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       title: taskTitle,
       description: taskDescription,
       isRetry,
-      failedSessionUrl: failedSessionId ? `Session ID: ${failedSessionId}` : undefined,
+      failedSessionReference: failedSessionId ? `Session ID: ${failedSessionId}` : undefined,
       failedSessionMessage
     };
 
@@ -121,7 +122,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: false,
           errorCode: "jules_transient_failure",
           errorFamily: toErrorFamily(classification),
-          errorMessage: error instanceof Error ? error.message : "Unknown error",
+          errorMessage: sanitizeError(error),
           retryNotBefore: new Date(getRetryNotBefore(attempt)).toISOString(),
           sessionParams: serializeSession({
             version: 1,
@@ -134,7 +135,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             attempt,
             failedSessions: [
               ...failedSessions,
-              { sessionId: 'unknown', failedAt: new Date().toISOString(), message: error instanceof Error ? error.message : "Unknown error", classification }
+              { sessionId: undefined, failedAt: new Date().toISOString(), message: sanitizeError(error), classification }
             ],
             createdAt: new Date().toISOString()
           }),
@@ -148,7 +149,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: false,
           errorCode: "jules_create_failure",
           errorFamily: toErrorFamily(classification),
-          errorMessage: error instanceof Error ? error.message : "Unknown error",
+          errorMessage: sanitizeError(error),
           clearSession: false
       };
     }
@@ -228,7 +229,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      timedOut: false,
                      errorCode: "jules_transient_failure",
                      errorFamily: toErrorFamily(classification),
-                     errorMessage: summarizeJulesFailure(failureDetails),
+                     errorMessage: sanitizeError(summarizeJulesFailure(failureDetails)),
                      retryNotBefore: new Date(getRetryNotBefore(session.attempt)).toISOString(),
                      sessionParams: serializeSession(session),
                      clearSession: false
@@ -240,7 +241,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      timedOut: false,
                      errorCode: "jules_task_failure",
                      errorFamily: toErrorFamily(classification),
-                     errorMessage: `Jules session failed and exhausted retries: ${summarizeJulesFailure(failureDetails)}`,
+                     errorMessage: sanitizeError(`Jules session failed and exhausted retries: ${summarizeJulesFailure(failureDetails)}`),
                      sessionParams: serializeSession(session),
                      clearSession: false
                  };
@@ -277,7 +278,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
              timedOut: false,
              errorCode: "jules_polling_error",
              errorFamily: toErrorFamily(classification),
-             errorMessage: error instanceof Error ? error.message : "Unknown error",
+             errorMessage: sanitizeError(error),
              sessionParams: serializeSession(session),
              clearSession: false
           };

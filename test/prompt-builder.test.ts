@@ -27,7 +27,7 @@ describe('Prompt Builder', () => {
   });
 
   it('builds retry prompt correctly', () => {
-    const retryCtx = { ...ctx, isRetry: true, failedSessionUrl: 'http://old', failedSessionMessage: 'crash' };
+    const retryCtx = { ...ctx, isRetry: true, failedSessionReference: 'http://old', failedSessionMessage: 'crash' };
     const prompt = buildPrompt(retryCtx, config);
     expect(prompt).toContain('A previous Jules session failed');
     expect(prompt).toContain('Previous session: http://old');

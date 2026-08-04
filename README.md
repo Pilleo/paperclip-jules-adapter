@@ -30,3 +30,46 @@ This is an alpha integration.
 - Includes failure retry backoffs correctly detecting API errors vs invalid tasks securely mapping into execution contexts supporting reliable continuations.
 
 Read more in `docs/architecture.md`.
+
+## How to Build
+
+1. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+2. **Verify Types and Tests:**
+   ```bash
+   npm run typecheck
+   npm run test
+   ```
+
+3. **Compile the Adapter:**
+   ```bash
+   npm run build
+   ```
+
+4. **Pack the Artifact:**
+   ```bash
+   npm pack
+   ```
+   This generates a `.tgz` artifact (e.g., `pilleo-paperclip-jules-adapter-0.1.0.tgz`) that can be loaded into the Paperclip host.
+
+## How to Use
+
+1. **Install in Paperclip Environment:**
+   Depending on your Paperclip deployment, install the packed `.tgz` file using the external adapter installation mechanism documented by your host version.
+
+   Example:
+   ```bash
+   npm install /path/to/pilleo-paperclip-jules-adapter-0.1.0.tgz
+   ```
+
+2. **Configuration:**
+   Once installed, the adapter exposes the configuration fields mapped in `src/ui/build-config.ts`. You must configure the following core fields within the Paperclip agent creation UI or configuration files:
+   - **Repository Source**: The primary code repository (e.g., `github.com/org/repo`).
+   - **Base Branch**: The branch to operate on (e.g., `main` or `master`).
+   - **Automation Mode**: Currently defaults to `AUTO_CREATE_PR`.
+
+3. **Provide Secrets:**
+   The adapter requires `JULES_API_KEY` to be passed via Paperclip's secure secret/environment variables injection configuration natively. **Never** hardcode this inside configuration JSON files.

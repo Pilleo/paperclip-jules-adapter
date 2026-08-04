@@ -1,13 +1,13 @@
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, validateSecrets } from "./config.js";
-import { JulesAdapterSessionV1, sessionCodec } from "./session.js";
+import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
 import { JulesClient, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPrompt } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
-import { classifyFailure, toErrorFamily } from "./failure-classifier.js";
+import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
 import { asPaperclipId } from "./brands.js";
-import { CtxContextSchema } from "./context-schemas.js";
+import { CtxContextSchema, HostContextSchema } from "./context-schemas.js";
 
 function createAcknowledgeQuestion(sessionId: string) {
     return {
@@ -45,6 +45,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const config = validateConfig(ctx.agent.adapterConfig);
   const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
+  const parsedHostCtx = HostContextSchema.parse(ctx);
 
   const secrets = validateSecrets(parsedCtxContext.secrets);
   const client = new JulesClient(secrets.JULES_API_KEY);
@@ -53,8 +54,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const pollInterval = config.pollIntervalSeconds * 1000;
   const heartbeatDeadline = Date.now() + (config.heartbeatPollWindowSeconds * 1000);
 
-  // We fall back safely if host context somehow drops it, assuming environment tests will fail first if truly unsupported.
-  const abortSignal = (ctx as any).abortSignal || new AbortController().signal;
+  const abortSignal = parsedHostCtx.abortSignal || new AbortController().signal;
 
   const rawTaskId = parsedCtxContext.task.id;
   const taskId = asPaperclipId(rawTaskId);
@@ -123,7 +123,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorFamily: toErrorFamily(classification),
           errorMessage: error instanceof Error ? error.message : "Unknown error",
           retryNotBefore: new Date(getRetryNotBefore(attempt)).toISOString(),
-          sessionParams: sessionCodec.encode({
+          sessionParams: serializeSession({
             version: 1,
             paperclipIssueId: taskId,
             promptHash: pHash,
@@ -137,7 +137,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               { sessionId: 'unknown', failedAt: new Date().toISOString(), message: error instanceof Error ? error.message : "Unknown error", classification }
             ],
             createdAt: new Date().toISOString()
-          }) as Record<string, unknown>,
+          }),
           clearSession: false
         };
       }
@@ -193,7 +193,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      exitCode: 0,
                      signal: null,
                      timedOut: false,
-                     sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+                     sessionParams: serializeSession(session),
                      question: createAcknowledgeQuestion(session.julesSessionId),
                      clearSession: false
                  };
@@ -203,21 +203,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  exitCode: 0,
                  signal: null,
                  timedOut: false,
-                 sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+                 sessionParams: serializeSession(session),
                  sessionDisplayId: session.julesSessionId || null,
                  summary: `Jules created PR: ${session.currentPrUrl}`,
                  resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl },
                  clearSession: true
              };
          } else if (session.phase === 'FAILED') {
-             const classification = classifyFailure(julesSession.errorInfo || new Error("Explicit Jules Failure"));
+             const failureDetails = julesSession.errorInfo || {};
+             const classification = classifyFailure(failureDetails);
              const willRetry = shouldRetry(classification, session.attempt, config);
 
              if (willRetry) {
                  session.failedSessions.push({
                      sessionId: session.julesSessionId,
                      failedAt: new Date().toISOString(),
-                     message: "Jules session failed explicitly",
+                     message: summarizeJulesFailure(failureDetails),
                      classification
                  });
                  session.phase = 'RETRY_SCHEDULED';
@@ -227,9 +228,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      timedOut: false,
                      errorCode: "jules_transient_failure",
                      errorFamily: toErrorFamily(classification),
-                     errorMessage: "Jules session failed",
+                     errorMessage: summarizeJulesFailure(failureDetails),
                      retryNotBefore: new Date(getRetryNotBefore(session.attempt)).toISOString(),
-                     sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+                     sessionParams: serializeSession(session),
                      clearSession: false
                  };
              } else {
@@ -239,8 +240,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      timedOut: false,
                      errorCode: "jules_task_failure",
                      errorFamily: toErrorFamily(classification),
-                     errorMessage: "Jules session failed and exhausted retries",
-                     sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+                     errorMessage: `Jules session failed and exhausted retries: ${summarizeJulesFailure(failureDetails)}`,
+                     sessionParams: serializeSession(session),
                      clearSession: false
                  };
              }
@@ -248,13 +249,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       if (stateMachineRes.requiresReturn) {
-          // Temporarily halt and return safely for interaction prompts.
-          // Spec requires deferring full round-trip answers unless paperclip supports strictly typed host contexts.
           return {
              exitCode: 0,
              signal: null,
              timedOut: false,
-             sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+             sessionParams: serializeSession(session),
              question: {
                  prompt: `Jules session ${session.julesSessionId} requires feedback (${session.phase}). Please review in Google Jules UI.`,
                  choices: [{ key: "ack", label: "Acknowledge" }]
@@ -279,7 +278,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
              errorCode: "jules_polling_error",
              errorFamily: toErrorFamily(classification),
              errorMessage: error instanceof Error ? error.message : "Unknown error",
-             sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+             sessionParams: serializeSession(session),
              clearSession: false
           };
       }
@@ -290,7 +289,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     exitCode: 0,
     signal: null,
     timedOut: false,
-    sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
+    sessionParams: serializeSession(session),
     clearSession: false
   };
 }

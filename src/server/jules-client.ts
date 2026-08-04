@@ -42,6 +42,14 @@ const PullRequestOutputSchema = z.object({
   }).catchall(z.unknown())
 }).catchall(z.unknown());
 
+export const JulesFailureSchema = z.object({
+  code: z.number().or(z.string()).optional(),
+  message: z.string().optional(),
+  status: z.string().optional()
+}).catchall(z.unknown());
+
+export type JulesFailure = z.infer<typeof JulesFailureSchema>;
+
 export const JulesSessionSchema = z.object({
   name: z.string().min(1),
   state: JulesStateSchema.optional(),
@@ -68,7 +76,7 @@ export interface JulesSession {
     name: JulesSessionName;
     id: JulesSessionId;
     state?: string | undefined;
-    errorInfo?: unknown | undefined;
+    errorInfo?: JulesFailure | undefined;
     rawOutputs?: unknown[] | undefined;
 }
 
@@ -83,6 +91,12 @@ export function extractPullRequestUrl(session: JulesSession): PrUrl | undefined 
         }
     }
     return undefined;
+}
+
+export function toJulesFailure(errorInfo: unknown): JulesFailure {
+    if (!errorInfo) return {};
+    const parsed = JulesFailureSchema.safeParse(errorInfo);
+    return parsed.success ? parsed.data : {};
 }
 
 export class JulesClient {
@@ -128,7 +142,7 @@ export class JulesClient {
           name,
           id: toJulesSessionId(name),
           state: raw.state,
-          errorInfo: raw.errorInfo,
+          errorInfo: raw.errorInfo ? toJulesFailure(raw.errorInfo) : undefined,
           rawOutputs: raw.outputs
       };
   }

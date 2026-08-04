@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { classifyFailure, toErrorFamily } from '../src/server/failure-classifier';
+import { classifyFailure, toErrorFamily, summarizeJulesFailure } from '../src/server/failure-classifier';
 import { JulesClientError } from '../src/server/jules-client';
 
-describe('classifyFailure extra', () => {
+describe('Failure Classifier and Tools Coverage', () => {
    it('handles generic unidentifiable errors securely', () => {
        expect(classifyFailure({})).toBe('unknown');
    });
@@ -16,5 +16,43 @@ describe('classifyFailure extra', () => {
        expect(toErrorFamily('configuration')).toBe(null);
        expect(toErrorFamily('task')).toBe(null);
        expect(toErrorFamily('unknown')).toBe(null);
+   });
+
+   describe('summarizeJulesFailure', () => {
+      it('returns message if available', () => {
+         expect(summarizeJulesFailure({ message: 'A precise crash' })).toBe('A precise crash');
+      });
+
+      it('returns status if available', () => {
+         expect(summarizeJulesFailure({ status: 'INTERNAL' })).toBe('Jules Error: INTERNAL');
+      });
+
+      it('returns code if available', () => {
+         expect(summarizeJulesFailure({ code: 500 })).toBe('Jules Error Code: 500');
+      });
+
+      it('returns explicit failure for empty objects', () => {
+         expect(summarizeJulesFailure({})).toBe('Explicit Jules Failure');
+      });
+   });
+
+   describe('Jules API raw payloads parsing classification checks', () => {
+      it('classifies auth status correctly', () => {
+         expect(classifyFailure({ status: 'UNAUTHENTICATED' })).toBe('configuration');
+         expect(classifyFailure({ status: 'PERMISSION_DENIED' })).toBe('configuration');
+         expect(classifyFailure({ code: 401 })).toBe('configuration');
+         expect(classifyFailure({ code: '403' })).toBe('configuration');
+      });
+      it('classifies task status correctly', () => {
+         expect(classifyFailure({ status: 'INVALID_ARGUMENT' })).toBe('task');
+         expect(classifyFailure({ code: 400 })).toBe('task');
+      });
+      it('classifies transient status correctly', () => {
+         expect(classifyFailure({ status: 'UNAVAILABLE' })).toBe('transient');
+         expect(classifyFailure({ status: 'INTERNAL' })).toBe('transient');
+         expect(classifyFailure({ code: 429 })).toBe('transient');
+         expect(classifyFailure({ code: 503 })).toBe('transient');
+         expect(classifyFailure({ code: 500 })).toBe('transient');
+      });
    });
 });

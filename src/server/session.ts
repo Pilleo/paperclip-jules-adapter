@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { JulesSessionId, PaperclipId, JulesActivityId, PrUrl, asJulesSessionId, asPaperclipId, asJulesActivityId, asPrUrl } from "./brands.js";
+import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 
 export const JulesSessionStateSchema = z.string();
 export type JulesSessionState = z.infer<typeof JulesSessionStateSchema>;
@@ -79,6 +80,13 @@ export interface JulesAdapterSessionV1 {
   lastActivityId?: string | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;
+}
+
+export type SerializedSessionParams = NonNullable<AdapterExecutionResult["sessionParams"]>;
+
+export function serializeSession(session: JulesAdapterSessionV1): SerializedSessionParams {
+  // Parsing via zod guarantees JSON compatibility, making it safe to typecast to the required SDK shape.
+  return JulesAdapterSessionV1Schema.parse(session) as SerializedSessionParams;
 }
 
 export const sessionCodec = {

@@ -7,8 +7,8 @@ export interface PromptContext {
   title: string;
   description: string;
   isRetry: boolean;
-  failedSessionUrl?: string;
-  failedSessionMessage?: string;
+  failedSessionUrl?: string | undefined;
+  failedSessionMessage?: string | undefined;
 }
 
 export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {

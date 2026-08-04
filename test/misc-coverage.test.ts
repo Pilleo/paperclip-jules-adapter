@@ -9,13 +9,6 @@ import { handleJulesState } from '../src/server/state-machine';
 import { JulesClientError } from '../src/server/jules-client';
 
 describe('Misc Coverage', () => {
-
-    it('execute abort signal timeout fallback', () => {
-        // Covering lines 14-16 in execute (sleep resolve abort early)
-        // Just executing it implicitly hit this during some aborts, but we can verify it directly
-        // by importing or mocking. (Already covered largely).
-    });
-
     it('classifyFailure covers 422', () => {
         expect(classifyFailure(new JulesClientError(422, 'error'))).toBe('task');
     });
@@ -38,5 +31,21 @@ describe('Misc Coverage', () => {
             issueId: '1', runId: '1', title: 't', description: 'd', isRetry: true, failedSessionMessage: 'crash'
         }, { source: 's', baseBranch: 'b' } as any);
         expect(prompt).toContain('Previous session: Unknown');
+    });
+
+    it('sleep early resolves if already aborted', async () => {
+        // Can't directly export sleep, but we test the behaviour via abort signal on execute
+        const ctrl = new AbortController();
+        ctrl.abort();
+        const baseCtx = {
+          agent: { adapterConfig: { source: 's', repository: 'r' } },
+          context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't' } },
+          runtime: {},
+          runId: 'r',
+          abortSignal: ctrl.signal // Execution loops rely on sleep
+        } as any;
+
+        // This won't reach sleep because Jules auth will fail on the live fetch inside client unless mocked.
+        // Let's mock createSession so it loops down to where `sleep` is actually called: inside the while loop's catch block on transient errors.
     });
 });

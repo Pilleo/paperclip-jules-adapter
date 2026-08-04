@@ -1,7 +1,9 @@
-export function formatEvent(event: any) {
-  // Formats the custom jules.* events for the CLI output
-  if (event?.type?.startsWith('jules.')) {
-      return `[Jules] ${event.type}: Session ${event.julesSessionId || 'unknown'}`;
+export function formatEvent(event: unknown) {
+  if (typeof event === 'object' && event !== null) {
+      const e = event as Record<string, unknown>;
+      if (typeof e.type === 'string' && e.type.startsWith('jules.')) {
+          return `[Jules] ${e.type}: Session ${e.julesSessionId || 'unknown'}`;
+      }
   }
   return null;
 }

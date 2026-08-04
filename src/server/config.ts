@@ -12,8 +12,6 @@ export const AdapterConfigSchema = z.object({
   maxAutomaticRestarts: z.number().min(0).max(10).default(3),
   invariantsFile: z.string().optional(),
 }).refine(data => {
-  // Simple check to ensure source and repository match conceptually or are valid
-  // This could be expanded based on specific allowlist requirements
   return data.source.length > 0;
 }, "Source is invalid");
 
@@ -21,7 +19,7 @@ export type AdapterConfig = z.infer<typeof AdapterConfigSchema>;
 
 export interface AdapterSecrets {
   JULES_API_KEY: string;
-  PAPERCLIP_API_TOKEN?: string;
+  PAPERCLIP_API_TOKEN?: string | undefined;
 }
 
 export function validateConfig(config: unknown): AdapterConfig {
@@ -29,12 +27,12 @@ export function validateConfig(config: unknown): AdapterConfig {
 }
 
 export function validateSecrets(env: Record<string, string | undefined>): AdapterSecrets {
-  const JULES_API_KEY = env.JULES_API_KEY;
+  const JULES_API_KEY = env['JULES_API_KEY'];
   if (!JULES_API_KEY) {
     throw new Error("Missing JULES_API_KEY secret");
   }
   return {
     JULES_API_KEY,
-    PAPERCLIP_API_TOKEN: env.PAPERCLIP_API_TOKEN
+    PAPERCLIP_API_TOKEN: env['PAPERCLIP_API_TOKEN']
   };
 }

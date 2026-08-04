@@ -1,28 +1,29 @@
 import { JulesClient } from './jules-client.js';
 import { JulesAdapterSessionV1 } from './session.js';
+import { JulesSessionId, asJulesActivityId } from './brands.js';
 
 export async function handleAwaitingUserFeedback(
   client: JulesClient,
-  sessionId: string,
+  sessionId: JulesSessionId,
   currentSession: JulesAdapterSessionV1
-): Promise<{ pendingInteraction: JulesAdapterSessionV1['pendingInteraction'], paperclipInteraction: any } | null> {
+): Promise<{ pendingInteraction: JulesAdapterSessionV1['pendingInteraction'], paperclipInteraction: Record<string, unknown> } | null> {
   const activities = await client.getActivities(sessionId);
-  // Extract latest unanswered question. Assume Jules API returns activities with a type and question text
-  const questions = activities?.activities?.filter((a: any) => a.type === 'QUESTION' && !a.answered) || [];
+  if (!activities || !activities.activities) return null;
+
+  const questions = activities.activities.filter(a => a.type === 'QUESTION' && !a.answered);
   const latestQuestion = questions[questions.length - 1];
 
   if (!latestQuestion) {
     return null;
   }
 
-  // Deduplicate using Jules activity ID
   if (currentSession.pendingInteraction?.julesActivityId === latestQuestion.id) {
-    return null; // Already pending
+    return null;
   }
 
   const pendingInteraction = {
     type: "user_feedback" as const,
-    julesActivityId: latestQuestion.id,
+    julesActivityId: asJulesActivityId(latestQuestion.id),
     question: latestQuestion.questionText || "Jules needs your feedback.",
     createdAt: new Date().toISOString()
   };
@@ -31,7 +32,7 @@ export async function handleAwaitingUserFeedback(
     type: 'ask_user_questions',
     questions: [
       {
-        id: latestQuestion.id, // Using Jules activity ID as interaction ID initially
+        id: latestQuestion.id,
         text: pendingInteraction.question
       }
     ]
@@ -42,11 +43,13 @@ export async function handleAwaitingUserFeedback(
 
 export async function handleAwaitingPlanApproval(
   client: JulesClient,
-  sessionId: string,
+  sessionId: JulesSessionId,
   currentSession: JulesAdapterSessionV1
-): Promise<{ pendingInteraction: JulesAdapterSessionV1['pendingInteraction'], paperclipInteraction: any } | null> {
+): Promise<{ pendingInteraction: JulesAdapterSessionV1['pendingInteraction'], paperclipInteraction: Record<string, unknown> } | null> {
   const activities = await client.getActivities(sessionId);
-  const plans = activities?.activities?.filter((a: any) => a.type === 'PLAN_PROPOSAL' && !a.approved) || [];
+  if (!activities || !activities.activities) return null;
+
+  const plans = activities.activities.filter(a => a.type === 'PLAN_PROPOSAL' && !a.approved);
   const latestPlan = plans[plans.length - 1];
 
   if (!latestPlan) {
@@ -59,13 +62,13 @@ export async function handleAwaitingPlanApproval(
 
   const pendingInteraction = {
     type: "plan_approval" as const,
-    julesActivityId: latestPlan.id,
+    julesActivityId: asJulesActivityId(latestPlan.id),
     question: latestPlan.planSummary || "Please approve the plan.",
     createdAt: new Date().toISOString()
   };
 
   const paperclipInteraction = {
-    type: 'ask_user_questions', // Could be 'confirm' if Paperclip supports it
+    type: 'ask_user_questions',
     questions: [
       {
         id: latestPlan.id,
@@ -77,14 +80,22 @@ export async function handleAwaitingPlanApproval(
   return { pendingInteraction, paperclipInteraction };
 }
 
+export interface ResolvedInteractionPayload {
+    interactionId?: string | undefined;
+    questionId?: string | undefined;
+    answer?: string | undefined;
+    text?: string | undefined;
+    approved?: boolean | undefined;
+    reason?: string | undefined;
+}
+
 export async function processResolvedInteraction(
   client: JulesClient,
-  sessionId: string,
+  sessionId: JulesSessionId,
   pendingInteraction: Exclude<JulesAdapterSessionV1['pendingInteraction'], undefined>,
-  resolvedInteractions: any[]
+  resolvedInteractions: ResolvedInteractionPayload[]
 ): Promise<boolean> {
-  // Find if our pending interaction was resolved
-  const resolution = resolvedInteractions?.find(ri =>
+  const resolution = resolvedInteractions.find(ri =>
     (ri.interactionId && ri.interactionId === pendingInteraction.paperclipInteractionId) ||
     (ri.questionId && ri.questionId === pendingInteraction.julesActivityId)
   );

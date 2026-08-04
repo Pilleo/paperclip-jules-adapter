@@ -7,6 +7,9 @@ import { handleJulesState } from "./state-machine.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
 import { handleAwaitingUserFeedback, handleAwaitingPlanApproval, processResolvedInteraction } from "./interactions.js";
+import { asPaperclipId } from "./brands.js";
+import { CtxContextSchema, ResolvedInteractionSchema } from "./context-schemas.js";
+import { z } from "zod";
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -31,31 +34,46 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+// In some integrations resolved interactions are passed on ctx root.
+const HostContextSchema = z.object({
+  abortSignal: z.instanceof(AbortSignal).optional(),
+  resolvedInteractions: z.array(ResolvedInteractionSchema).optional().default([])
+}).catchall(z.unknown());
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const config = validateConfig(ctx.agent.adapterConfig);
-  const secrets = validateSecrets((ctx.context?.secrets as Record<string, string | undefined>) || {});
+
+  // Strict parsing of context
+  const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
+  const parsedHostCtx = HostContextSchema.parse(ctx);
+
+  const secrets = validateSecrets(parsedCtxContext.secrets);
   const client = new JulesClient(secrets.JULES_API_KEY);
 
   let session = ctx.runtime.sessionParams ? sessionCodec.decode(ctx.runtime.sessionParams) : null;
   const pollInterval = config.pollIntervalSeconds * 1000;
   const heartbeatDeadline = Date.now() + (config.heartbeatPollWindowSeconds * 1000);
 
-  const abortSignal = (ctx as any).abortSignal || new AbortController().signal;
-  const resolvedInteractions = (ctx as any).resolvedInteractions || [];
-  const taskId = (ctx.context?.task as any)?.id || ctx.runtime.taskKey || 'unknown';
-  const taskTitle = (ctx.context?.task as any)?.title || 'Jules Task';
-  const taskDescription = (ctx.context?.task as any)?.description || '';
+  const abortSignal = parsedHostCtx.abortSignal || new AbortController().signal;
+  const resolvedInteractions = parsedHostCtx.resolvedInteractions;
+
+  const rawTaskId = parsedCtxContext.task?.id || ctx.runtime.taskKey || 'unknown';
+  const taskId = asPaperclipId(rawTaskId);
+  const taskTitle = parsedCtxContext.task?.title || 'Jules Task';
+  const taskDescription = parsedCtxContext.task?.description || '';
 
   if (!session || session.phase === 'RETRY_SCHEDULED') {
     const isRetry = session?.phase === 'RETRY_SCHEDULED';
     const failedSessions = session?.failedSessions || [];
-    const attempt = isRetry ? (session!.attempt + 1) : 1;
+    const attempt = (isRetry && session) ? (session.attempt + 1) : 1;
 
     let failedSessionId, failedSessionMessage;
     if (isRetry && failedSessions.length > 0) {
        const lastFailed = failedSessions[failedSessions.length - 1];
-       failedSessionId = lastFailed.sessionId;
-       failedSessionMessage = lastFailed.message;
+       if (lastFailed) {
+         failedSessionId = lastFailed.sessionId;
+         failedSessionMessage = lastFailed.message;
+       }
     }
 
     const promptContext = {
@@ -138,6 +156,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
+  if (!session) throw new Error("Session is null after initialization");
+
   const currentPromptContext = {
     issueId: taskId,
     runId: ctx.runId,
@@ -153,7 +173,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   if (session.pendingInteraction && resolvedInteractions.length) {
-    const processed = await processResolvedInteraction(client, session.julesSessionId!, session.pendingInteraction, resolvedInteractions);
+    if (!session.julesSessionId) throw new Error("Missing julesSessionId during interaction processing");
+    const processed = await processResolvedInteraction(client, session.julesSessionId, session.pendingInteraction, resolvedInteractions);
     if (processed) {
       session.pendingInteraction = undefined;
       session.phase = 'RUNNING';
@@ -161,12 +182,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   while (!abortSignal.aborted && Date.now() < heartbeatDeadline) {
+    if (!session.julesSessionId) throw new Error("Missing julesSessionId during polling loop");
+
     try {
-      const julesSession = await client.getSession(session.julesSessionId!);
+      const julesSession = await client.getSession(session.julesSessionId);
       const state = julesSession.state || 'UNKNOWN';
       session.julesState = state;
       session.lastPolledAt = new Date().toISOString();
-      session.currentPrUrl = julesSession.currentPrUrl;
+      if (julesSession.currentPrUrl) {
+          session.currentPrUrl = julesSession.currentPrUrl;
+      }
 
       const stateMachineRes = handleJulesState(state, !!julesSession.currentPrUrl);
       session.phase = stateMachineRes.nextPhase;
@@ -192,7 +217,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  signal: null,
                  timedOut: false,
                  sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
-                 sessionDisplayId: session.julesSessionId,
+                 sessionDisplayId: session.julesSessionId || null,
                  summary: `Jules created PR: ${session.currentPrUrl}`,
                  resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl },
                  clearSession: true
@@ -203,7 +228,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
              if (willRetry) {
                  session.failedSessions.push({
-                     sessionId: session.julesSessionId!,
+                     sessionId: session.julesSessionId,
                      failedAt: new Date().toISOString(),
                      message: "Jules session failed explicitly",
                      classification
@@ -238,12 +263,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (stateMachineRes.requiresReturn) {
           let interaction = null;
           if (session.phase === 'WAITING_FOR_FEEDBACK') {
-              interaction = await handleAwaitingUserFeedback(client, session.julesSessionId!, session);
+              interaction = await handleAwaitingUserFeedback(client, session.julesSessionId, session);
           } else if (session.phase === 'WAITING_FOR_PLAN_APPROVAL') {
-              interaction = await handleAwaitingPlanApproval(client, session.julesSessionId!, session);
+              interaction = await handleAwaitingPlanApproval(client, session.julesSessionId, session);
           }
 
           if (interaction) {
+              if (!interaction.pendingInteraction) throw new Error("Interaction missing pending data");
               session.pendingInteraction = interaction.pendingInteraction;
               return {
                   exitCode: 0,
@@ -251,7 +277,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   timedOut: false,
                   sessionParams: sessionCodec.encode(session) as Record<string, unknown>,
                   question: {
-                      prompt: interaction.pendingInteraction!.question,
+                      prompt: interaction.pendingInteraction.question,
                       choices: [{ key: "answer", label: "Answer (via context)" }]
                   },
                   clearSession: false

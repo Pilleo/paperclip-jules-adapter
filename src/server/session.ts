@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { JulesSessionId, PaperclipId, JulesActivityId, PrUrl, asJulesSessionId, asPaperclipId, asJulesActivityId, asPrUrl } from "./brands.js";
 
-export const JulesSessionStateSchema = z.string(); // Accepts any state string for diagnostics
+export const JulesSessionStateSchema = z.string();
 export type JulesSessionState = z.infer<typeof JulesSessionStateSchema>;
 
 export const SessionPhaseSchema = z.enum([
@@ -49,7 +50,36 @@ export const JulesAdapterSessionV1Schema = z.object({
   lastPolledAt: z.string().optional()
 });
 
-export type JulesAdapterSessionV1 = z.infer<typeof JulesAdapterSessionV1Schema>;
+export interface JulesAdapterSessionV1 {
+  version: 1;
+  paperclipIssueId: PaperclipId;
+  promptHash: string;
+  repository: string;
+  source: string;
+  baseBranch: string;
+  phase: z.infer<typeof SessionPhaseSchema>;
+  julesSessionId?: JulesSessionId | undefined;
+  julesSessionUrl?: string | undefined;
+  julesState?: string | undefined;
+  attempt: number;
+  failedSessions: Array<{
+    sessionId: string;
+    failedAt: string;
+    message: string;
+    classification: "transient" | "configuration" | "task" | "unknown";
+  }>;
+  currentPrUrl?: PrUrl | undefined;
+  pendingInteraction?: {
+    type: "user_feedback" | "plan_approval";
+    julesActivityId: JulesActivityId;
+    paperclipInteractionId?: string | undefined;
+    question: string;
+    createdAt: string;
+  } | undefined;
+  lastActivityId?: string | undefined;
+  createdAt: string;
+  lastPolledAt?: string | undefined;
+}
 
 export const sessionCodec = {
   decode(data: unknown): JulesAdapterSessionV1 {
@@ -57,12 +87,22 @@ export const sessionCodec = {
       throw new Error('Invalid session data format');
     }
 
-    const obj = data as any;
-    if (obj.version !== 1) {
-      throw new Error(`Unsupported session version: ${obj.version}. Only version 1 is supported.`);
+    const obj = data as Record<string, unknown>;
+    if (obj['version'] !== 1) {
+      throw new Error(`Unsupported session version: ${obj['version']}. Only version 1 is supported.`);
     }
 
-    return JulesAdapterSessionV1Schema.parse(data);
+    const raw = JulesAdapterSessionV1Schema.parse(data);
+    return {
+        ...raw,
+        paperclipIssueId: asPaperclipId(raw.paperclipIssueId),
+        julesSessionId: raw.julesSessionId ? asJulesSessionId(raw.julesSessionId) : undefined,
+        currentPrUrl: raw.currentPrUrl ? asPrUrl(raw.currentPrUrl) : undefined,
+        pendingInteraction: raw.pendingInteraction ? {
+            ...raw.pendingInteraction,
+            julesActivityId: asJulesActivityId(raw.pendingInteraction.julesActivityId)
+        } : undefined
+    } as JulesAdapterSessionV1;
   },
 
   encode(session: JulesAdapterSessionV1): unknown {

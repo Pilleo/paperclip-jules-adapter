@@ -3,7 +3,7 @@ import { AdapterConfig } from './config.js';
 
 export function getRetryNotBefore(attempt: number): number {
   const delays = [2, 10, 30]; // Minutes
-  const delayMinutes = delays[Math.min(attempt - 1, delays.length - 1)];
+  const delayMinutes = delays[Math.min(attempt - 1, delays.length - 1)] ?? 30;
   return Date.now() + delayMinutes * 60 * 1000;
 }
 

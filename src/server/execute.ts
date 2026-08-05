@@ -1,5 +1,5 @@
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { AdapterConfig, validateConfig, validateSecrets } from "./config.js";
+import { AdapterConfig, validateConfig, requireJulesApiKey } from "./config.js";
 import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
 import { JulesClient, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPrompt } from "./prompt-builder.js";
@@ -55,8 +55,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
   const parsedHostCtx = HostContextSchema.parse(ctx);
 
-  const secrets = validateSecrets(parsedCtxContext.secrets);
-  const client = new JulesClient(secrets.JULES_API_KEY);
+  const apiKey = requireJulesApiKey();
+  const client = new JulesClient(apiKey);
 
   let session = ctx.runtime.sessionParams ? sessionCodec.decode(ctx.runtime.sessionParams) : null;
   const pollInterval = config.pollIntervalSeconds * 1000;

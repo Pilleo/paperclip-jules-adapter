@@ -1,8 +1,16 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { JulesClient, JulesClientError, extractPullRequestUrl } from '../src/server/jules-client';
 import { parseJulesSessionName, asJulesSessionId } from '../src/server/brands';
 
-describe('JulesClient', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('JulesClient', () => {
   let client: JulesClient;
   const apiKey = 'test-api-key';
 
@@ -123,6 +131,14 @@ describe('JulesClient', () => {
             body: JSON.stringify({ approved: true })
           })
         );
+  });
+
+  beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
   });
 
   describe('extractPullRequestUrl', () => {

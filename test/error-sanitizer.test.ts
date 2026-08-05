@@ -1,7 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { sanitizeError } from '../src/server/error-sanitizer';
 
-describe('sanitizeError', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('sanitizeError', () => {
     it('truncates long messages', () => {
         const longMsg = "a".repeat(1000);
         const result = sanitizeError(longMsg, { maxLen: 10 });

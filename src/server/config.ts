@@ -17,22 +17,14 @@ export const AdapterConfigSchema = z.object({
 
 export type AdapterConfig = z.infer<typeof AdapterConfigSchema>;
 
-export interface AdapterSecrets {
-  JULES_API_KEY: string;
-  PAPERCLIP_API_TOKEN?: string | undefined;
-}
-
 export function validateConfig(config: unknown): AdapterConfig {
   return AdapterConfigSchema.parse(config);
 }
 
-export function validateSecrets(env: Record<string, string | undefined>): AdapterSecrets {
-  const JULES_API_KEY = env['JULES_API_KEY'];
-  if (!JULES_API_KEY) {
-    throw new Error("Missing JULES_API_KEY secret");
+export function requireJulesApiKey(): string {
+  const key = process.env['JULES_API_KEY']?.trim();
+  if (!key) {
+    throw new Error("JULES_API_KEY is missing from the Paperclip server environment");
   }
-  return {
-    JULES_API_KEY,
-    PAPERCLIP_API_TOKEN: env['PAPERCLIP_API_TOKEN']
-  };
+  return key;
 }

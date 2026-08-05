@@ -1,7 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { sessionCodec, JulesAdapterSessionV1 } from '../src/server/session';
 
-describe('sessionCodec', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('sessionCodec', () => {
   const validSession: JulesAdapterSessionV1 = {
     version: 1,
     paperclipIssueId: 'issue-123',

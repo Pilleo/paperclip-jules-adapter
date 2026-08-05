@@ -1,9 +1,25 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { shouldRetry, getRetryNotBefore } from '../src/server/retry-policy';
 import { AdapterConfig } from '../src/server/config';
 
-describe('Failure Recovery & Retry Policy', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('Failure Recovery & Retry Policy', () => {
   const config = { maxAutomaticRestarts: 3 } as AdapterConfig;
+
+  beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
 
   describe('shouldRetry', () => {
     it('does not retry configuration errors', () => {
@@ -27,6 +43,14 @@ describe('Failure Recovery & Retry Policy', () => {
       // 4th failure (attempt 4) -> retry? no
       expect(shouldRetry('transient', 4, config)).toBe(false);
     });
+  });
+
+  beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
   });
 
   describe('getRetryNotBefore accounting tracking delays accurately', () => {

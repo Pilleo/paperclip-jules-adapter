@@ -1,7 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { handleJulesState } from '../src/server/state-machine';
 
-describe('State Machine', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('State Machine', () => {
   it('handles IN_PROGRESS', () => {
     const res = handleJulesState('IN_PROGRESS', false);
     expect(res).toEqual({

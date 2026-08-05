@@ -1,9 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { testEnvironment } from '../src/server/test-environment';
 
 vi.mock('../src/server/jules-client');
 
-describe('testEnvironment Configuration Diagnostics', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('testEnvironment Configuration Diagnostics', () => {
    it('fails gracefully logging available keys for missing configurations', async () => {
        const res = await testEnvironment({
            companyId: "comp-1",
@@ -13,8 +21,8 @@ describe('testEnvironment Configuration Diagnostics', () => {
            }
        });
        expect(res.status).toBe('fail');
-       expect(res.checks[0]!.message).toContain('Missing required configuration');
-       expect(res.checks[0]!.message).toContain('Received keys: foo');
+       expect(res.checks[0]!.message).toContain('configuration is invalid');
+       expect(res.checks[0]!.message).toContain('Received config keys: foo');
    });
 
    it('fails gracefully logging available keys when nested under adapterSchemaValues', async () => {
@@ -26,7 +34,7 @@ describe('testEnvironment Configuration Diagnostics', () => {
            }
        });
        expect(res.status).toBe('fail');
-       expect(res.checks[0]!.message).toContain('Missing required configuration');
-       expect(res.checks[0]!.message).toContain('Received keys: foo');
+       expect(res.checks[0]!.message).toContain('configuration is invalid');
+       expect(res.checks[0]!.message).toContain('Received config keys: foo');
    });
 });

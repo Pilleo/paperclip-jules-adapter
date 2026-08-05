@@ -1,8 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from '../src/server/failure-classifier';
 import { JulesClientError } from '../src/server/jules-client';
 
-describe('Failure Classifier and Tools Coverage', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('Failure Classifier and Tools Coverage', () => {
    it('handles generic unidentifiable errors securely', () => {
        expect(classifyFailure({})).toBe('unknown');
    });
@@ -18,7 +26,15 @@ describe('Failure Classifier and Tools Coverage', () => {
        expect(toErrorFamily('unknown')).toBe(null);
    });
 
-   describe('summarizeJulesFailure', () => {
+   beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('summarizeJulesFailure', () => {
       it('returns message if available', () => {
          expect(summarizeJulesFailure({ message: 'A precise crash' })).toBe('A precise crash');
       });
@@ -36,7 +52,15 @@ describe('Failure Classifier and Tools Coverage', () => {
       });
    });
 
-   describe('Jules API raw payloads parsing classification checks', () => {
+   beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('Jules API raw payloads parsing classification checks', () => {
       it('classifies auth status correctly', () => {
          expect(classifyFailure({ status: 'UNAUTHENTICATED' })).toBe('configuration');
          expect(classifyFailure({ status: 'PERMISSION_DENIED' })).toBe('configuration');

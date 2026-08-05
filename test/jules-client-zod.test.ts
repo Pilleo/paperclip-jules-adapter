@@ -1,7 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { JulesClient } from '../src/server/jules-client';
 
-describe('JulesClient Zod Validation', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('JulesClient Zod Validation', () => {
     it('getSession throws Zod error if name is missing', async () => {
        const client = new JulesClient('test');
        global.fetch = vi.fn().mockResolvedValueOnce({

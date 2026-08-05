@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { execute } from '../src/server/execute';
 import { sessionCodec } from '../src/server/session';
 import { shouldRetry } from '../src/server/retry-policy';
@@ -16,7 +16,15 @@ vi.mock('../src/server/failure-classifier', async (importOriginal) => {
     };
 });
 
-describe('Misc Coverage', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('Misc Coverage', () => {
     it('retry-policy shouldRetry handles transient failure outside loop limit', () => {
         expect(shouldRetry('transient', 99, { maxAutomaticRestarts: 2 } as any)).toBe(false);
     });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { execute } from '../src/server/execute';
 import { AdapterExecutionContext } from '@paperclipai/adapter-utils';
 import { sessionCodec } from '../src/server/session';
@@ -22,7 +22,15 @@ vi.mock('../src/server/retry-policy', async (importOriginal) => {
     };
 });
 
-describe('execute retry policies', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('execute retry policies', () => {
   const baseCtx: AdapterExecutionContext = {
     agent: {
         id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
@@ -33,7 +41,7 @@ describe('execute retry policies', () => {
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
     config: {},
     context: {
-        secrets: { JULES_API_KEY: 'test-key' },
+
         task: { id: 'task-1', title: 'Task' }
     },
     runId: 'run-1',

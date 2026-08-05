@@ -1,7 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { JulesClient, JulesClientError } from '../src/server/jules-client';
 
-describe('JulesClient Extra', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('JulesClient Extra', () => {
   it('throws Unknown error if text parsing fails', async () => {
     const client = new JulesClient('test-key');
     global.fetch = vi.fn().mockResolvedValueOnce({

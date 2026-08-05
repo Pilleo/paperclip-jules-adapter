@@ -18,10 +18,13 @@ Google Jules sessions can run for days, executing complex coding tasks. Papercli
 
 ### Environment Variables
 
-You must inject the Google Jules API key as a secret/auth token when starting the agent in your Paperclip environment.
+The adapter requires `JULES_API_KEY` to securely access the Google Jules API. It explicitly looks for it inside the native server process environment; it must not be defined manually via internal `adapterConfig` registries.
+
+For a local installation:
 
 ```sh
-JULES_API_KEY="AIza..."
+export JULES_API_KEY='AIza...'
+npx paperclipai
 ```
 
 ### Paperclip UI Registry Integration

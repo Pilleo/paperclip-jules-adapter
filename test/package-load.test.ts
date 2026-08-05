@@ -3,7 +3,15 @@ import { execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
-describe('Package Load Test', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('Package Load Test', () => {
     let tgzPath: string;
     let extractDir: string;
 

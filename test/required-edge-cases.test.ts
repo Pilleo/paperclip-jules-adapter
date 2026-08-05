@@ -1,11 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { execute } from '../src/server/execute';
 import { JulesClient } from '../src/server/jules-client';
 import { sessionCodec } from '../src/server/session';
 
 vi.mock('../src/server/jules-client');
 
-describe('Required Edge Cases Tests', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('Required Edge Cases Tests', () => {
     beforeEach(() => {
         vi.clearAllMocks();
     });

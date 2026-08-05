@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { validateConfig, validateSecrets, AdapterConfigSchema } from '../src/server/config';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { validateConfig, requireJulesApiKey, AdapterConfigSchema } from '../src/server/config';
 import { julesConfigSchema } from '../src/server/config-schema';
 
 describe('Config', () => {
@@ -7,13 +7,16 @@ describe('Config', () => {
     expect(() => validateConfig({ repository: 'a' })).toThrow();
   });
 
-  it('validateSecrets throws if JULES_API_KEY is missing', () => {
-     expect(() => validateSecrets({})).toThrow('Missing JULES_API_KEY secret');
+  it('requireJulesApiKey throws if JULES_API_KEY is missing', () => {
+     delete process.env['JULES_API_KEY'];
+     expect(() => requireJulesApiKey()).toThrow('JULES_API_KEY is missing');
   });
 
-  it('validateSecrets extracts token successfully', () => {
-      const res = validateSecrets({ JULES_API_KEY: 'test' });
-      expect(res.JULES_API_KEY).toBe('test');
+  it('requireJulesApiKey extracts token successfully', () => {
+      process.env['JULES_API_KEY'] = 'test';
+      const res = requireJulesApiKey();
+      expect(res).toBe('test');
+      delete process.env['JULES_API_KEY'];
   });
 
   it('declarative defaults satisfy runtime validation (no drift)', () => {

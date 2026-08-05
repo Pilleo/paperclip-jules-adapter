@@ -1,18 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { testEnvironment } from '../src/server/test-environment';
 import { JulesClient } from '../src/server/jules-client';
 import { AdapterEnvironmentTestContext } from '@paperclipai/adapter-utils';
 
 vi.mock('../src/server/jules-client');
 
-describe('testEnvironment', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('testEnvironment', () => {
     const baseCtx: AdapterEnvironmentTestContext = {
         companyId: 'test',
         adapterType: 'jules',
         config: {
             source: 'github', repository: 'repo', baseBranch: 'master',
             pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30,
-            secrets: { JULES_API_KEY: 'test-key' }
+
         }
     };
 

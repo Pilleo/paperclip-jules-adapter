@@ -1,8 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { buildPrompt, hashPrompt, PromptContext } from '../src/server/prompt-builder';
 import { AdapterConfig } from '../src/server/config';
 
-describe('Prompt Builder', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('Prompt Builder', () => {
   const config = {
     source: 'github.com/org/repo',
     baseBranch: 'main'

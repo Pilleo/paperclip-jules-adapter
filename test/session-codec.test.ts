@@ -1,7 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { sessionCodec } from '../src/server/session';
 
-describe('sessionCodec coverage', () => {
+beforeAll(() => {
+    process.env['JULES_API_KEY'] = 'test-key';
+  });
+
+  afterAll(() => {
+    delete process.env['JULES_API_KEY'];
+  });
+
+  describe('sessionCodec coverage', () => {
     it('deserialize handles nulls and data correctly', () => {
         expect(sessionCodec.deserialize(null)).toBeNull();
         expect(sessionCodec.deserialize(undefined)).toBeNull();

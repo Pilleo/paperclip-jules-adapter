@@ -7,11 +7,11 @@ describe('Config', () => {
   });
 
   it('validateSecrets throws if JULES_API_KEY is missing', () => {
-     expect(() => validateSecrets({})).toThrow('Missing JULES_API_KEY secret');
+     expect(() => validateSecrets(undefined)).toThrow('Missing JULES_API_KEY');
   });
 
-  it('validateSecrets extracts paperclip api token', () => {
-      const res = validateSecrets({ JULES_API_KEY: 'test', PAPERCLIP_API_TOKEN: 'token' });
-      expect(res.PAPERCLIP_API_TOKEN).toBe('token');
+  it('validateSecrets extracts token successfully', () => {
+      const res = validateSecrets('test');
+      expect(res.JULES_API_KEY).toBe('test');
   });
 });

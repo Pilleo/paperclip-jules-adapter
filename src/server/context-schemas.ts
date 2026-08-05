@@ -7,7 +7,6 @@ export const TaskSchema = z.object({
 });
 
 export const CtxContextSchema = z.object({
-  secrets: z.record(z.string(), z.string().optional()).optional().default({}),
   task: TaskSchema
 }).catchall(z.unknown());
 

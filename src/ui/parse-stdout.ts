@@ -1,4 +1,5 @@
-export function parseStdout(stdout: string) {
-  // Can be used to parse tool stdout for UI rendering if needed by the paperclip host
-  return stdout;
+import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+
+export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[] {
+  return [{ content: line }] as unknown as TranscriptEntry[];
 }

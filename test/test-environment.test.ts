@@ -9,12 +9,12 @@ describe('testEnvironment', () => {
     const baseCtx: AdapterEnvironmentTestContext = {
         companyId: 'test',
         adapterType: 'jules',
+        authToken: 'test-key',
         config: {
             source: 'github', repository: 'repo', baseBranch: 'master',
-            pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30,
-            secrets: { JULES_API_KEY: 'test-key' }
+            pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30
         }
-    };
+    } as any;
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -27,7 +27,7 @@ describe('testEnvironment', () => {
     });
 
     it('returns fail status correctly on bad config', async () => {
-        const res = await testEnvironment({ config: {} } as any);
+        const res = await testEnvironment({ config: { } } as any);
         expect(res.status).toBe('fail');
         expect(res.checks[0]!.code).toBe('config_validation_failed');
     });

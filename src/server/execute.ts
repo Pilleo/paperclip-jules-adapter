@@ -48,14 +48,11 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  if (!ctx.agent || typeof ctx.agent.adapterConfig === 'undefined') {
-      throw new Error("Missing adapter config");
-  }
-  const config = validateConfig(ctx.agent.adapterConfig);
+  const config = validateConfig(ctx.config);
   const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
   const parsedHostCtx = HostContextSchema.parse(ctx);
 
-  const secrets = validateSecrets(parsedCtxContext.secrets);
+  const secrets = validateSecrets(ctx.authToken);
   const client = new JulesClient(secrets.JULES_API_KEY);
 
   let session = ctx.runtime.sessionParams ? sessionCodec.decode(ctx.runtime.sessionParams) : null;

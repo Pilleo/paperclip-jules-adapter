@@ -20,8 +20,9 @@ beforeAll(() => {
     });
 
     it('rejects malformed non-empty persisted sessions', () => {
-        expect(() => sessionCodec.decode({ version: 1, paperclipIssueId: 'issue-1' })).toThrow();
-        expect(() => sessionCodec.deserialize({ version: 1, paperclipIssueId: 'issue-1' })).toThrow();
+        expect(sessionCodec.decode({ version: 1, paperclipIssueId: 'issue-1' })).toBeNull();
+        expect(sessionCodec.deserialize({ version: 1, paperclipIssueId: 'issue-1' })).toBeNull();
+        expect(sessionCodec.serialize({ version: 1, paperclipIssueId: 'issue-1' } as any)).toBeNull();
     });
 
     it('successfully decodes a valid session state', () => {

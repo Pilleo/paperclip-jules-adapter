@@ -93,28 +93,32 @@ function isEmptyRecord(value: unknown): boolean {
   );
 }
 
+function parseSessionRecord(data: unknown): JulesAdapterSessionV1 | null {
+  if (data == null || isEmptyRecord(data)) return null;
+
+  try {
+    return JulesAdapterSessionV1Schema.parse(data) as JulesAdapterSessionV1;
+  } catch {
+    return null;
+  }
+}
+
 export const sessionCodec = {
   deserialize(data: unknown): Record<string, unknown> | null {
-      if (data == null || isEmptyRecord(data)) return null;
-      return JulesAdapterSessionV1Schema.parse(data) as Record<string, unknown>;
+      return parseSessionRecord(data) as Record<string, unknown> | null;
   },
   serialize(session: Record<string, unknown> | null): Record<string, unknown> | null {
       if (session == null) return null;
-      return JulesAdapterSessionV1Schema.parse(session) as Record<string, unknown>;
+      try {
+          return JulesAdapterSessionV1Schema.parse(session) as Record<string, unknown>;
+      } catch {
+          return null;
+      }
   },
   decode(data: unknown): JulesAdapterSessionV1 | null {
-    if (data == null || isEmptyRecord(data)) return null;
+    const raw = parseSessionRecord(data);
+    if (!raw) return null;
 
-    if (typeof data !== 'object') {
-      throw new Error('Invalid session data format');
-    }
-
-    const obj = data as Record<string, unknown>;
-    if (obj['version'] !== 1) {
-      throw new Error(`Unsupported session version: ${obj['version']}. Only version 1 is supported.`);
-    }
-
-    const raw = JulesAdapterSessionV1Schema.parse(data);
     return {
         ...raw,
         paperclipIssueId: asPaperclipId(raw.paperclipIssueId),

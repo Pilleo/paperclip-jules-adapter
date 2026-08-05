@@ -34,14 +34,14 @@ beforeAll(() => {
     expect(encoded).toEqual(validSession);
   });
 
-  it('rejects invalid version', () => {
+  it('treats invalid version as empty persisted state', () => {
     const invalidSession = { ...validSession, version: 2 };
-    expect(() => sessionCodec.decode(invalidSession)).toThrow(/Unsupported session version/);
+    expect(sessionCodec.decode(invalidSession)).toBeNull();
   });
 
-  it('rejects malformed session data', () => {
+  it('treats malformed session data as empty persisted state', () => {
     const malformedSession = { ...validSession, attempt: -1 };
-    expect(() => sessionCodec.decode(malformedSession)).toThrow();
+    expect(sessionCodec.decode(malformedSession)).toBeNull();
   });
 
   it('returns display id', () => {

@@ -31,7 +31,7 @@ beforeAll(() => {
 
     it('sessionCodec decode invalid type', () => {
         expect(sessionCodec.decode(null)).toBeNull();
-        expect(() => sessionCodec.decode('string')).toThrow('Invalid session data format');
+        expect(sessionCodec.decode('string')).toBeNull();
     });
 
     it('state-machine QUEUED state', () => {

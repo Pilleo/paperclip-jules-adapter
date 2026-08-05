@@ -4,7 +4,7 @@ export const AdapterConfigSchema = z.object({
   source: z.string().min(1, "Source is required"),
   repository: z.string().min(1, "Repository is required"),
   baseBranch: z.string().default("master"),
-  automationMode: z.enum(["AUTO_CREATE_PR", "MANUAL", "WAIT_FOR_APPROVAL"]).default("AUTO_CREATE_PR"),
+  automationMode: z.enum(["AUTO_CREATE_PR", "AUTOMATION_MODE_UNSPECIFIED"]).default("AUTO_CREATE_PR"),
   requirePlanApproval: z.boolean().default(false),
   pollIntervalSeconds: z.number().min(10).max(300).default(45),
   heartbeatPollWindowSeconds: z.number().min(30).max(600).default(120),

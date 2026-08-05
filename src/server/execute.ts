@@ -101,7 +101,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           prompt,
           title: taskTitle,
           sourceContext: {
-              source: `sources/${config.repository}`, // Assumption of API mapping, format requirement usually applies to google APIs
+              source: config.source,
               githubRepoContext: {
                   startingBranch: config.baseBranch
               }

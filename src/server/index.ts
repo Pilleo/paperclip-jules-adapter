@@ -3,6 +3,7 @@ import { testEnvironment } from "./test-environment.js";
 import { AdapterConfigSchema } from "./config.js";
 import { ServerAdapterModule } from "@paperclipai/adapter-utils";
 import { sessionCodec } from "./session.js";
+import { getConfigSchema } from "../ui/build-config.js";
 
 export const type = "jules";
 export const label = "Google Jules";
@@ -19,6 +20,7 @@ export function createServerAdapter(): ServerAdapterModule {
         type: "jules",
         execute,
         testEnvironment,
-        sessionCodec
+        sessionCodec,
+        getConfigSchema
     };
 }

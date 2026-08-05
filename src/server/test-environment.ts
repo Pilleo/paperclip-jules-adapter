@@ -4,8 +4,7 @@ import { asJulesSessionId } from "./brands.js";
 import { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 
 export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
-  // If paperclip sends fields flat or nested differently we should at least have debugging fallback keys for diagnostics
-  const config = ctx.config || {};
+  const config = ctx.config?.['adapterSchemaValues'] || ctx.config || {};
   const secrets = (ctx.config?.['secrets'] || ctx.config) as Record<string, string | undefined>;
 
   let validatedConfig;
@@ -14,7 +13,6 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
      validatedConfig = validateConfig(config);
      validatedSecrets = validateSecrets(secrets);
   } catch (err: unknown) {
-      // Diagnostic injection replacing blindly returning raw Zod blobs
       const diagnosticKeys = Object.keys(config).join(", ") || "(none)";
       return {
           adapterType: "jules",

@@ -16,4 +16,17 @@ describe('testEnvironment Configuration Diagnostics', () => {
        expect(res.checks[0]!.message).toContain('Missing required configuration');
        expect(res.checks[0]!.message).toContain('Received keys: foo');
    });
+
+   it('fails gracefully logging available keys when nested under adapterSchemaValues', async () => {
+       const res = await testEnvironment({
+           companyId: "comp-1",
+           adapterType: "jules",
+           config: {
+               adapterSchemaValues: { foo: "bar" }
+           }
+       });
+       expect(res.status).toBe('fail');
+       expect(res.checks[0]!.message).toContain('Missing required configuration');
+       expect(res.checks[0]!.message).toContain('Received keys: foo');
+   });
 });

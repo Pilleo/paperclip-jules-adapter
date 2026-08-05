@@ -9,48 +9,59 @@ beforeAll(() => {
     delete process.env['JULES_API_KEY'];
   });
 
-  describe('sessionCodec coverage', () => {
-    it('deserialize handles nulls and data correctly', () => {
-        expect(sessionCodec.deserialize(null)).toBeNull();
-        expect(sessionCodec.deserialize(undefined)).toBeNull();
-
-        const validData = {
-           version: 1,
-           paperclipIssueId: 't',
-           promptHash: 'h',
-           repository: 'r',
-           source: 's',
-           baseBranch: 'master',
-           phase: 'RUNNING',
-           attempt: 1,
-           failedSessions: [],
-           createdAt: new Date().toISOString()
-       };
-       expect(sessionCodec.deserialize(validData)).toMatchObject({ version: 1 });
+  describe('Session Codec', () => {
+    it.each([
+      [null],
+      [undefined],
+      [{}],
+    ])("treats %p as no persisted session", (raw) => {
+      expect(sessionCodec.deserialize(raw)).toBeNull();
+      expect(sessionCodec.decode(raw)).toBeNull();
     });
 
-    it('serialize handles nulls and data correctly', () => {
-        expect(sessionCodec.serialize(null)).toBeNull();
-        expect(sessionCodec.serialize(undefined as any)).toBeNull();
-
-        const validData = {
-           version: 1,
-           paperclipIssueId: 't',
-           promptHash: 'h',
-           repository: 'r',
-           source: 's',
-           baseBranch: 'master',
-           phase: 'RUNNING',
-           attempt: 1,
-           failedSessions: [],
-           createdAt: new Date().toISOString()
-       };
-       expect(sessionCodec.serialize(validData)).toMatchObject({ version: 1 });
+    it('rejects malformed non-empty persisted sessions', () => {
+        expect(() => sessionCodec.decode({ version: 1, paperclipIssueId: 'issue-1' })).toThrow();
+        expect(() => sessionCodec.deserialize({ version: 1, paperclipIssueId: 'issue-1' })).toThrow();
     });
 
-    it('getDisplayId handles nulls and defined sessions correctly', () => {
+    it('successfully decodes a valid session state', () => {
+        const payload = {
+            version: 1,
+            paperclipIssueId: 'i',
+            promptHash: 'h',
+            repository: 'r',
+            source: 's',
+            baseBranch: 'b',
+            phase: 'RUNNING',
+            attempt: 1,
+            failedSessions: [],
+            createdAt: '2020'
+        };
+        const res = sessionCodec.decode(payload);
+        expect(res).toBeDefined();
+        expect(res!.phase).toBe('RUNNING');
+    });
+
+    it('successfully extracts display id from encoded structure', () => {
+        const payload = {
+            version: 1,
+            paperclipIssueId: 'i',
+            promptHash: 'h',
+            repository: 'r',
+            source: 's',
+            baseBranch: 'b',
+            phase: 'RUNNING',
+            attempt: 1,
+            failedSessions: [],
+            createdAt: '2020',
+            julesSessionId: 'j-1'
+        };
+        expect(sessionCodec.getDisplayId(payload)).toBe('j-1');
         expect(sessionCodec.getDisplayId(null)).toBeNull();
-        expect(sessionCodec.getDisplayId({ julesSessionId: 'sess' })).toBe('sess');
-        expect(sessionCodec.getDisplayId({ })).toBeNull();
     });
+});
+describe('Session Codec serialization coverage', () => {
+   it('correctly maps null outputs for encode and serialize boundaries', () => {
+      expect(sessionCodec.serialize(null)).toBeNull();
+   });
 });

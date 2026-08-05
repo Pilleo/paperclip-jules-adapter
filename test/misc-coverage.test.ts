@@ -30,7 +30,7 @@ beforeAll(() => {
     });
 
     it('sessionCodec decode invalid type', () => {
-        expect(() => sessionCodec.decode(null)).toThrow('Invalid session data format');
+        expect(sessionCodec.decode(null)).toBeNull();
         expect(() => sessionCodec.decode('string')).toThrow('Invalid session data format');
     });
 

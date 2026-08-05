@@ -84,21 +84,28 @@ export interface JulesAdapterSessionV1 {
 
 export type SerializedSessionParams = NonNullable<AdapterExecutionResult["sessionParams"]>;
 
-export function serializeSession(session: JulesAdapterSessionV1): SerializedSessionParams {
-  return JulesAdapterSessionV1Schema.parse(session) as SerializedSessionParams;
+function isEmptyRecord(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  );
 }
 
 export const sessionCodec = {
   deserialize(data: unknown): Record<string, unknown> | null {
-      if (data === null || data === undefined) return null;
+      if (data == null || isEmptyRecord(data)) return null;
       return JulesAdapterSessionV1Schema.parse(data) as Record<string, unknown>;
   },
   serialize(session: Record<string, unknown> | null): Record<string, unknown> | null {
-      if (session === null || session === undefined) return null;
+      if (session == null) return null;
       return JulesAdapterSessionV1Schema.parse(session) as Record<string, unknown>;
   },
-  decode(data: unknown): JulesAdapterSessionV1 {
-    if (typeof data !== 'object' || data === null) {
+  decode(data: unknown): JulesAdapterSessionV1 | null {
+    if (data == null || isEmptyRecord(data)) return null;
+
+    if (typeof data !== 'object') {
       throw new Error('Invalid session data format');
     }
 
@@ -126,6 +133,10 @@ export const sessionCodec = {
 
   getDisplayId(session: Record<string, unknown> | null): string | null {
     if (!session) return null;
-    return session['julesSessionId'] as string || null;
+    const parsed = this.deserialize(session);
+    return parsed?.['julesSessionId'] as string || null;
   }
 };
+export function serializeSession(session: JulesAdapterSessionV1): SerializedSessionParams {
+  return sessionCodec.encode(session) as SerializedSessionParams;
+}

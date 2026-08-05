@@ -58,7 +58,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const apiKey = requireJulesApiKey();
   const client = new JulesClient(apiKey);
 
-  let session = ctx.runtime.sessionParams ? sessionCodec.decode(ctx.runtime.sessionParams) : null;
+  let session = sessionCodec.decode(ctx.runtime.sessionParams);
   const pollInterval = config.pollIntervalSeconds * 1000;
   const heartbeatDeadline = Date.now() + (config.heartbeatPollWindowSeconds * 1000);
 

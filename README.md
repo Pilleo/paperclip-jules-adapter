@@ -19,7 +19,7 @@ This is an alpha integration.
 - Jules sessions are persisted across Paperclip heartbeats.
 - Transient Jules failures can be retried automatically according to robust bounding loops avoiding infinite execution.
 - PR creation is surfaced to Paperclip and keeps the task active for review.
-- Jules `AWAITING_USER_FEEDBACK` and `AWAITING_PLAN_APPROVAL` states are surfaced as Paperclip notifications, but interaction states must be resolved manually in the Jules UI (responses are not forwarded directly from Paperclip).
+- Jules `AWAITING_USER_FEEDBACK` and `AWAITING_PLAN_APPROVAL` states are surfaced as Paperclip notifications, but responses are not yet forwarded back to Jules. Complete these interactions manually in the Jules UI.
 - PR merge/close state is not yet synchronized to Paperclip. Resolve or cancel the Paperclip task manually after GitHub review and merge.
 - Host integration remains subject to a Paperclip loader/continuation contract test inside specific deployment contexts.
 
@@ -72,4 +72,48 @@ Read more in `docs/architecture.md`.
    - **Automation Mode**: Currently defaults to `AUTO_CREATE_PR`.
 
 3. **Provide Secrets:**
-   The adapter requires `JULES_API_KEY` to be passed via Paperclip's secure secret/environment variables injection configuration natively mapped as the core connection authentication token natively. **Never** hardcode this inside configuration JSON files.
+   The adapter requires `JULES_API_KEY` to be passed via Paperclip's secure secret/environment variables injection configuration natively. **Never** hardcode this inside configuration JSON files.
+
+### Paperclip UI Registry Integration
+
+This package exposes the `buildJulesAdapterConfig` and `parseJulesStdoutLine` modules required to integrate into the Paperclip UI registry.
+
+However, the react `ConfigFields` component must be integrated directly into your Paperclip fork or host deployment:
+
+1. Create the UI Component (`ui/src/adapters/jules/config-fields.tsx`):
+```tsx
+import type { AdapterConfigFieldsProps } from "../types";
+import { Field, ToggleField, DraftInput, DraftNumberInput } from "../../components/agent-config-primitives";
+
+export function JulesConfigFields(props: AdapterConfigFieldsProps) {
+  const source = props.config?.source ?? "";
+  const repository = props.config?.repository ?? "";
+  const baseBranch = props.config?.baseBranch ?? "master";
+
+  return (
+    <>
+      <Field label="Jules source" hint="e.g. sources/github/org/repo">
+        <DraftInput value={source} onCommit={(value) => props.mark("source", value)} />
+      </Field>
+      {/* ... Add controls for baseBranch, pollIntervalSeconds, maxSessionAgeHours, etc. */}
+    </>
+  );
+}
+```
+
+2. Register the Adapter (`ui/src/adapters/jules/index.ts`):
+```ts
+import type { UIAdapterModule } from "../types";
+import { parseJulesStdoutLine, buildJulesAdapterConfig } from "@pilleo/paperclip-jules-adapter/ui";
+import { JulesConfigFields } from "./config-fields";
+
+export const julesUIAdapter: UIAdapterModule = {
+  type: "jules",
+  label: "Google Jules",
+  parseStdoutLine: parseJulesStdoutLine,
+  ConfigFields: JulesConfigFields,
+  buildAdapterConfig: buildJulesAdapterConfig,
+};
+```
+
+3. Export it in your Paperclip `ui/src/adapters/registry.ts` configuration to mount it to Paperclip.

@@ -40,8 +40,8 @@ describe('Misc Coverage', () => {
     it('sleep early resolves if already aborted', async () => {
         const ctrl = new AbortController();
         const baseCtx = {
-          config: { source: "s", repository: "r" },
-          authToken: "k", context: { secrets: { JULES_API_KEY: "k" }, task: { id: 't', title: 't' } },
+          agent: { adapterConfig: { source: 's', repository: 'r' } },
+          context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't', title: 't' } },
           runtime: {},
           runId: 'r',
           abortSignal: ctrl.signal

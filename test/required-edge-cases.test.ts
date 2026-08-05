@@ -17,9 +17,8 @@ describe('Required Edge Cases Tests', () => {
 
     it('handles malformed jules payloads safely via api schema throws', async () => {
        const baseCtx = {
-         config: { source: "s", repository: "r" },
-         authToken: "k",
-         context: { secrets: { JULES_API_KEY: "k" }, task: { id: 't', title: 'test task' } },
+         agent: { adapterConfig: { source: 's', repository: 'r' } },
+         context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't', title: 'test task' } },
          runtime: {},
          runId: 'r'
        } as any;
@@ -31,9 +30,8 @@ describe('Required Edge Cases Tests', () => {
 
     it('handles unknown state successfully mapping to RUNNING loop', async () => {
        const baseCtx = {
-         config: { source: "s", repository: "r" },
-         authToken: "k",
-         context: { secrets: { JULES_API_KEY: "k" }, task: { id: 't', title: 'test task' } },
+         agent: { adapterConfig: { source: 's', repository: 'r' } },
+         context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't', title: 'test task' } },
          runtime: {},
          runId: 'r'
        } as any;
@@ -52,9 +50,8 @@ describe('Required Edge Cases Tests', () => {
 
     it('handles absent session ID gracefully with invariant throw', async () => {
        const baseCtx = {
-         config: { source: "s", repository: "r" },
-         authToken: "k",
-         context: { secrets: { JULES_API_KEY: "k" }, task: { id: 't', title: 'test task' } },
+         agent: { adapterConfig: { source: 's', repository: 'r' } },
+         context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't', title: 'test task' } },
          runtime: {},
          runId: 'r'
        } as any;

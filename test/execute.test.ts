@@ -20,10 +20,9 @@ vi.mock('../src/server/jules-client', async (importOriginal) => {
 
 describe('execute', () => {
   const baseCtx: AdapterExecutionContext = {
-    authToken: "test-key",
     agent: {
         id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
-        config: {
+        adapterConfig: {
           source: 'github',
           repository: 'pilleo/test',
           baseBranch: 'master',
@@ -32,7 +31,7 @@ describe('execute', () => {
         }
     },
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
-    config: { source: 'github', repository: 'pilleo/test', baseBranch: 'master', pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30 },
+    config: {},
     context: {
         secrets: { JULES_API_KEY: 'test-key' },
         task: { id: 'task-1', title: 'Test Task', description: 'Test desc' }

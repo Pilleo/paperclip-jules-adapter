@@ -24,15 +24,14 @@ vi.mock('../src/server/retry-policy', async (importOriginal) => {
 
 describe('execute retry policies', () => {
   const baseCtx: AdapterExecutionContext = {
-    authToken: "test-key",
     agent: {
         id: '1', companyId: '1', name: 'agent', adapterType: 'jules',
-        config: {
+        adapterConfig: {
           source: 'github', repository: 'test', baseBranch: 'master', pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30
         }
     },
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
-    config: { source: 'github', repository: 'pilleo/test', baseBranch: 'master', pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30 },
+    config: {},
     context: {
         secrets: { JULES_API_KEY: 'test-key' },
         task: { id: 'task-1', title: 'Task' }

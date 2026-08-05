@@ -3,15 +3,17 @@ import { JulesClient } from "./jules-client.js";
 import { asJulesSessionId } from "./brands.js";
 import { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 
-export async function testEnvironment(ctx: AdapterEnvironmentTestContext & { authToken?: string }): Promise<AdapterEnvironmentTestResult> {
-  const config = ctx.config || {};
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
+  const config = ctx.config?.['adapterSchemaValues'] || ctx.config || {};
+  const secrets = (ctx.config?.['secrets'] || ctx.config) as Record<string, string | undefined>;
 
   let validatedConfig;
   let validatedSecrets;
   try {
      validatedConfig = validateConfig(config);
-     validatedSecrets = validateSecrets(ctx.authToken);
+     validatedSecrets = validateSecrets(secrets);
   } catch (err: unknown) {
+      const diagnosticKeys = Object.keys(config).join(", ") || "(none)";
       return {
           adapterType: "jules",
           status: "fail",
@@ -19,10 +21,7 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext & { aut
           checks: [{
               code: "config_validation_failed",
               level: "error",
-              message: [
-                  err instanceof Error ? err.message : String(err),
-                  `Received config keys: ${Object.keys(config).sort().join(", ") || "(none)"}`
-              ].join(" - ")
+              message: `Missing required configuration. Received keys: ${diagnosticKeys}. Details: ${err instanceof Error ? err.message : String(err)}`
           }]
       };
   }

@@ -13,7 +13,8 @@ describe('testEnvironment Configuration Diagnostics', () => {
            }
        });
        expect(res.status).toBe('fail');
-       expect(res.checks[0]!.message).toContain('Received config keys: foo');
+       expect(res.checks[0]!.message).toContain('Missing required configuration');
+       expect(res.checks[0]!.message).toContain('Received keys: foo');
    });
 
    it('fails gracefully logging available keys when nested under adapterSchemaValues', async () => {
@@ -25,6 +26,7 @@ describe('testEnvironment Configuration Diagnostics', () => {
            }
        });
        expect(res.status).toBe('fail');
-       expect(res.checks[0]!.message).toContain('Received config keys: adapterSchemaValues');
+       expect(res.checks[0]!.message).toContain('Missing required configuration');
+       expect(res.checks[0]!.message).toContain('Received keys: foo');
    });
 });

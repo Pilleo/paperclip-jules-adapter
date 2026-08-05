@@ -19,17 +19,20 @@ export type AdapterConfig = z.infer<typeof AdapterConfigSchema>;
 
 export interface AdapterSecrets {
   JULES_API_KEY: string;
+  PAPERCLIP_API_TOKEN?: string | undefined;
 }
 
 export function validateConfig(config: unknown): AdapterConfig {
   return AdapterConfigSchema.parse(config);
 }
 
-export function validateSecrets(authToken: string | undefined): AdapterSecrets {
-  if (!authToken) {
-    throw new Error("Missing JULES_API_KEY authentication token (passed as ctx.authToken)");
+export function validateSecrets(env: Record<string, string | undefined>): AdapterSecrets {
+  const JULES_API_KEY = env['JULES_API_KEY'];
+  if (!JULES_API_KEY) {
+    throw new Error("Missing JULES_API_KEY secret");
   }
   return {
-    JULES_API_KEY: authToken
+    JULES_API_KEY,
+    PAPERCLIP_API_TOKEN: env['PAPERCLIP_API_TOKEN']
   };
 }

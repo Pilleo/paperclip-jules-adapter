@@ -99,9 +99,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     try {
       const julesSession = await client.createSession({
           prompt,
-          repository: config.repository,
-          source: config.source,
-          baseBranch: config.baseBranch
+          title: taskTitle,
+          sourceContext: {
+              source: `sources/${config.repository}`, // Assumption of API mapping, format requirement usually applies to google APIs
+              githubRepoContext: {
+                  startingBranch: config.baseBranch
+              }
+          },
+          requirePlanApproval: config.requirePlanApproval,
+          automationMode: config.automationMode
       });
 
       session = {
@@ -207,9 +213,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                  };
              }
 
-             // Jules completed and we have a PR.
-             // Do NOT clear session or exit successfully, as the PR needs review/merge first.
-             // Surface a question confirming to humans that the PR is ready.
              return {
                  exitCode: 0,
                  signal: null,

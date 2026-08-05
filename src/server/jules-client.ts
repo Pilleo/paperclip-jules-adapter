@@ -1,13 +1,20 @@
 import { z } from 'zod';
 import { JulesSessionName, JulesSessionId, JulesActivityId, PrUrl, parseJulesSessionName, toJulesSessionId, asPrUrl } from './brands.js';
 
-export interface CreateSessionRequest {
-  title?: string | undefined;
-  prompt: string;
-  repository?: string | undefined;
-  source?: string | undefined;
-  baseBranch?: string | undefined;
-}
+export const JulesCreateSessionRequestSchema = z.object({
+  title: z.string().optional(),
+  prompt: z.string(),
+  sourceContext: z.object({
+    source: z.string(),
+    githubRepoContext: z.object({
+      startingBranch: z.string()
+    }).optional() // We make this optional or dynamic if there are other source contexts, but for now we expect github
+  }),
+  requirePlanApproval: z.boolean().optional(),
+  automationMode: z.string().optional()
+});
+
+export type CreateSessionRequest = z.infer<typeof JulesCreateSessionRequestSchema>;
 
 export interface SendMessageRequest {
   message: string;
@@ -148,9 +155,10 @@ export class JulesClient {
   }
 
   async createSession(request: CreateSessionRequest): Promise<JulesSession> {
+    const payload = JulesCreateSessionRequestSchema.parse(request);
     const data = await this.fetchApi('/sessions', {
       method: 'POST',
-      body: JSON.stringify(request)
+      body: JSON.stringify(payload)
     });
     return this.mapSession(JulesSessionSchema.parse(data));
   }

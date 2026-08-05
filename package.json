@@ -48,9 +48,11 @@
     "node": ">=22"
   },
   "scripts": {
+    "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "vitest run --coverage"
+    "test": "vitest run --coverage",
+    "prepack": "npm run clean && npm run build"
   },
   "publishConfig": {
     "access": "public"

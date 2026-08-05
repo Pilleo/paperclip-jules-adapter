@@ -4,6 +4,7 @@ import { asJulesSessionId } from "./brands.js";
 import { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 
 export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
+  // If paperclip sends fields flat or nested differently we should at least have debugging fallback keys for diagnostics
   const config = ctx.config || {};
   const secrets = (ctx.config?.['secrets'] || ctx.config) as Record<string, string | undefined>;
 
@@ -13,6 +14,8 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
      validatedConfig = validateConfig(config);
      validatedSecrets = validateSecrets(secrets);
   } catch (err: unknown) {
+      // Diagnostic injection replacing blindly returning raw Zod blobs
+      const diagnosticKeys = Object.keys(config).join(", ") || "(none)";
       return {
           adapterType: "jules",
           status: "fail",
@@ -20,7 +23,7 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
           checks: [{
               code: "config_validation_failed",
               level: "error",
-              message: err instanceof Error ? err.message : String(err)
+              message: `Missing required configuration. Received keys: ${diagnosticKeys}. Details: ${err instanceof Error ? err.message : String(err)}`
           }]
       };
   }
@@ -29,7 +32,6 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
 
   try {
      await client.getSession(asJulesSessionId('test-auth-check')).catch((err: unknown) => {
-         // if it's explicitly auth related we want to fail testing, but general session not found or random ones bubble naturally usually
          throw err;
      });
   } catch (err: unknown) {
@@ -47,7 +49,7 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
               }]
           };
         } else if (status === 404 || status === 400 || status === 422) {
-           // Not found is completely fine for auth checking a fake string
+           // Not found is fine for auth checking a fake string
         } else {
              const message = err instanceof Error ? err.message : String(err);
              return {
@@ -77,7 +79,6 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
   }
 
   if (validatedConfig.invariantsFile) {
-      // Stub for invariant bounds. Add checks array updates appropriately.
   }
 
   return {

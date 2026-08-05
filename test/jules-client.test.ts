@@ -26,7 +26,13 @@ describe('JulesClient', () => {
       json: async () => mockResponse,
     });
 
-    const result = await client.createSession({ prompt: 'test prompt' });
+    const result = await client.createSession({
+        prompt: 'test prompt',
+        sourceContext: {
+            source: 'sources/test',
+            githubRepoContext: { startingBranch: 'master' }
+        }
+    });
 
     expect(global.fetch).toHaveBeenCalledWith(
       'https://jules.googleapis.com/v1alpha/sessions',
@@ -36,7 +42,13 @@ describe('JulesClient', () => {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': apiKey,
         }),
-        body: JSON.stringify({ prompt: 'test prompt' })
+        body: JSON.stringify({
+            prompt: 'test prompt',
+            sourceContext: {
+                source: 'sources/test',
+                githubRepoContext: { startingBranch: 'master' }
+            }
+        })
       })
     );
     expect(result.id).toEqual('123');

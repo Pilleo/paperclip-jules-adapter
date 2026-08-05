@@ -9,22 +9,29 @@ describe('JulesClient Zod Validation', () => {
           json: async () => ({ state: 'RUNNING' })
        });
 
-       await expect(client.getSession('id')).rejects.toThrow(/Required/);
+       await expect(client.getSession('id' as any)).rejects.toThrow(/Required/);
     });
 
-    it('createSession sends branch context', async () => {
+    it('createSession sends correct shape based on Jules API schema', async () => {
        const client = new JulesClient('test');
        global.fetch = vi.fn().mockResolvedValueOnce({
           ok: true,
           json: async () => ({ name: 'sess-1' })
        });
 
-       await client.createSession({ prompt: 'test', repository: 'repo', source: 'src', baseBranch: 'main' });
+       await client.createSession({
+           prompt: 'test',
+           title: 't',
+           sourceContext: {
+               source: 'sources/github',
+               githubRepoContext: { startingBranch: 'main' }
+           }
+       });
 
        expect(global.fetch).toHaveBeenCalledWith(
           expect.anything(),
           expect.objectContaining({
-              body: expect.stringContaining('"baseBranch":"main"')
+              body: expect.stringContaining('"sourceContext":{"source":"sources/github","githubRepoContext":{"startingBranch":"main"}}')
           })
        );
     });

@@ -1,119 +1,54 @@
-# Google Jules Adapter for Paperclip
+# @pilleo/paperclip-jules-adapter
 
-The Jules adapter enables running Google Jules asynchronously via Paperclip's orchestration engine correctly mapping long-running multi-day sessions inside bounded execution context loops.
-
-## Scope: v0.1.0-alpha
-
-**This is an experimental non-interactive Jules adapter foundation.**
-
-It supports:
-- Session creation
-- Bounded polling inside Paperclip heartbeats
-- Terminal PR reporting
-- State persistence and retry bounds.
-
-## Current Limitations
-
-This is an alpha integration.
-
-- Jules sessions are persisted across Paperclip heartbeats.
-- Transient Jules failures can be retried automatically according to robust bounding loops avoiding infinite execution.
-- PR creation is surfaced to Paperclip and keeps the task active for review.
-- Jules `AWAITING_USER_FEEDBACK` and `AWAITING_PLAN_APPROVAL` states are surfaced as Paperclip notifications, but responses are not yet forwarded back to Jules. Complete these interactions manually in the Jules UI.
-- PR merge/close state is not yet synchronized to Paperclip. Resolve or cancel the Paperclip task manually after GitHub review and merge.
-- Host integration remains subject to a Paperclip loader/continuation contract test inside specific deployment contexts.
+A robust Paperclip adapter for starting and orchestrating long-lived Google Jules developer agent sessions.
 
 ## Architecture
 
-- Uses `@paperclipai/adapter-utils` matching `2026.722.0` contracts securely strictly validating boundaries via typed Zod checks.
-- Strictly validates API responses enforcing native type safety omitting arbitrary context overrides or un-typed property guessing avoiding `any`.
-- Includes failure retry backoffs correctly detecting API errors vs invalid tasks securely mapping into execution contexts supporting reliable continuations.
+Google Jules sessions can run for days, executing complex coding tasks. Paperclip's orchestration model uses a bounded heartbeat system. This adapter implements that model by executing long-running Google Jules sessions across multiple small Paperclip heartbeats, persisting and resuming orchestration state cleanly between intervals.
 
-Read more in `docs/architecture.md`.
+### How it works
+1. **Start**: The adapter maps a Paperclip task and prompt into a new Jules session.
+2. **Heartbeat Polling**: For roughly a two-minute window, it polls the Google API.
+3. **Persist & Park**: If Jules is still running after the window, the adapter durably parks the session state (`julesSessionId`, state enum, failure histories). Paperclip handles sleep/wake boundaries.
+4. **Resumption**: Paperclip resumes the adapter later, injecting the durable state, which triggers Jules polling again.
+5. **Completion**: If Jules completes (creating a PR), the task enters `in_review` via the Paperclip interactive PR workflow rather than silently marking itself complete.
+6. **Recovery**: Network transient failures, crashes, and 500s trigger a reliable backoff continuation without failing the task. Exhausted retries request human intervention via interaction blocks.
 
-## How to Build
+## Setup Instructions
 
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+### Environment Variables
 
-2. **Verify Types and Tests:**
-   ```bash
-   npm run typecheck
-   npm run test
-   ```
+You must inject the Google Jules API key as a secret/auth token when starting the agent in your Paperclip environment.
 
-3. **Compile the Adapter:**
-   ```bash
-   npm run build
-   ```
-
-4. **Pack the Artifact:**
-   ```bash
-   npm pack
-   ```
-   This generates a `.tgz` artifact (e.g., `pilleo-paperclip-jules-adapter-0.1.0.tgz`) that can be loaded into the Paperclip host.
-
-## How to Use
-
-1. **Install in Paperclip Environment:**
-   Depending on your Paperclip deployment, install the packed `.tgz` file using the external adapter installation mechanism documented by your host version.
-
-   Example:
-   ```bash
-   npm install /path/to/pilleo-paperclip-jules-adapter-0.1.0.tgz
-   ```
-
-2. **Configuration:**
-   Once installed, the adapter exposes the configuration fields mapped in `src/ui/build-config.ts`. You must configure the following core fields within the Paperclip agent creation UI or configuration files:
-   - **Repository Source**: The primary code repository (e.g., `github.com/org/repo`).
-   - **Base Branch**: The branch to operate on (e.g., `main` or `master`).
-   - **Automation Mode**: Currently defaults to `AUTO_CREATE_PR`.
-
-3. **Provide Secrets:**
-   The adapter requires `JULES_API_KEY` to be passed via Paperclip's secure secret/environment variables injection configuration natively. **Never** hardcode this inside configuration JSON files.
+```sh
+JULES_API_KEY="AIza..."
+```
 
 ### Paperclip UI Registry Integration
 
-This package exposes the `buildJulesAdapterConfig` and `parseJulesStdoutLine` modules required to integrate into the Paperclip UI registry.
+This adapter acts as an **External Adapter** using Paperclip's dynamic external configuration capabilities.
 
-However, the react `ConfigFields` component must be integrated directly into your Paperclip fork or host deployment:
+The server plugin loader (`createServerAdapter()`) automatically provides the required declarative interface schema (`getConfigSchema`) to Paperclip's backend via `GET /api/adapters/jules/config-schema`.
 
-1. Create the UI Component (`ui/src/adapters/jules/config-fields.tsx`):
-```tsx
-import type { AdapterConfigFieldsProps } from "../types";
-import { Field, ToggleField, DraftInput, DraftNumberInput } from "../../components/agent-config-primitives";
+When correctly installed on your Paperclip server instance, the UI will dynamically render the configuration form for:
+- Jules source
+- Repository allowlist
+- Base branch
+- Poll intervals & automation modes.
 
-export function JulesConfigFields(props: AdapterConfigFieldsProps) {
-  const source = props.config?.source ?? "";
-  const repository = props.config?.repository ?? "";
-  const baseBranch = props.config?.baseBranch ?? "master";
+*Note:* You do **not** need to manually patch Paperclip UI or implement React `ConfigFields` yourself.
 
-  return (
-    <>
-      <Field label="Jules source" hint="e.g. sources/github/org/repo">
-        <DraftInput value={source} onCommit={(value) => props.mark("source", value)} />
-      </Field>
-      {/* ... Add controls for baseBranch, pollIntervalSeconds, maxSessionAgeHours, etc. */}
-    </>
-  );
-}
+## Current Alpha Limitations
+* (v0.1.0) Jules interactions requiring bidirectional communication, such as user feedback questions and plan approvals, currently halt the adapter explicitly and request human intervention. You must review and answer those in the native Google Jules dashboard, and the adapter will resume naturally once it detects the state has progressed.
+
+## Development Requirements
+- Node 22
+- `pnpm`
+- Vitest
+
+## Validation
+```sh
+npm run typecheck
+npm test
+npm run build
 ```
-
-2. Register the Adapter (`ui/src/adapters/jules/index.ts`):
-```ts
-import type { UIAdapterModule } from "../types";
-import { parseJulesStdoutLine, buildJulesAdapterConfig } from "@pilleo/paperclip-jules-adapter/ui";
-import { JulesConfigFields } from "./config-fields";
-
-export const julesUIAdapter: UIAdapterModule = {
-  type: "jules",
-  label: "Google Jules",
-  parseStdoutLine: parseJulesStdoutLine,
-  ConfigFields: JulesConfigFields,
-  buildAdapterConfig: buildJulesAdapterConfig,
-};
-```
-
-3. Export it in your Paperclip `ui/src/adapters/registry.ts` configuration to mount it to Paperclip.

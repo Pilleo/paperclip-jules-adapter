@@ -6,10 +6,25 @@ export const TaskSchema = z.object({
   description: z.string().optional().default('')
 });
 
-export const CtxContextSchema = z.object({
+const RawContextSchema = z.object({
   secrets: z.record(z.string(), z.string().optional()).optional().default({}),
-  task: TaskSchema
+  task: TaskSchema.optional(),
+  paperclipIssue: TaskSchema.optional()
 }).catchall(z.unknown());
+
+export const CtxContextSchema = RawContextSchema.transform((context, ctx) => {
+  const task = context.task ?? context.paperclipIssue;
+  if (!task) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['task'],
+      message: 'Either task or paperclipIssue is required'
+    });
+    return z.NEVER;
+  }
+
+  return { ...context, task };
+});
 
 export const HostContextSchema = z.object({
   abortSignal: z.instanceof(AbortSignal).optional()

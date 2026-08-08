@@ -44,27 +44,6 @@ export const julesConfigSchema: AdapterConfigSchema = {
       hint: "Jules pauses after planning and waits for explicit approval.",
     },
     {
-      key: "pollIntervalSeconds",
-      label: "Polling interval (seconds)",
-      type: "number",
-      required: true,
-      default: 45,
-    },
-    {
-      key: "heartbeatPollWindowSeconds",
-      label: "Polling window per heartbeat (seconds)",
-      type: "number",
-      required: true,
-      default: 120,
-    },
-    {
-      key: "maxSessionAgeHours",
-      label: "Maximum session age (hours)",
-      type: "number",
-      required: true,
-      default: 168,
-    },
-    {
       key: "maxAutomaticRestarts",
       label: "Maximum automatic restarts",
       type: "number",

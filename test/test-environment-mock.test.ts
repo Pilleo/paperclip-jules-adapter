@@ -1,15 +1,7 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { testEnvironment } from '../src/server/test-environment';
 
 vi.mock('../src/server/jules-client');
-
-beforeAll(() => {
-    process.env['JULES_API_KEY'] = 'test-key';
-  });
-
-  afterAll(() => {
-    delete process.env['JULES_API_KEY'];
-  });
 
   describe('testEnvironment Configuration Diagnostics', () => {
    it('fails gracefully logging available keys for missing configurations', async () => {

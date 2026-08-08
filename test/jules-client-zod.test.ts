@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { JulesClient } from '../src/server/jules-client';
+import { JulesActivitiesResponseSchema, JulesClient } from '../src/server/jules-client';
 
 beforeAll(() => {
     process.env['JULES_API_KEY'] = 'test-key';
@@ -42,5 +42,21 @@ beforeAll(() => {
               body: expect.stringContaining('"sourceContext":{"source":"sources/github","githubRepoContext":{"startingBranch":"main"}}')
           })
        );
+    });
+
+    it('accepts a live plan step without an index', () => {
+      const parsed = JulesActivitiesResponseSchema.parse({
+        activities: [{
+          id: 'activity-1',
+          planGenerated: {
+            plan: {
+              id: 'plan-1',
+              steps: [{ id: 'step-1', title: 'Inspect repository' }],
+            },
+          },
+        }],
+      });
+
+      expect(parsed.activities?.[0]?.planGenerated?.plan.steps[0]?.index).toBeUndefined();
     });
 });

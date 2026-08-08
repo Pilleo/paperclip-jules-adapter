@@ -17,12 +17,7 @@ export const JulesCreateSessionRequestSchema = z.object({
 export type CreateSessionRequest = z.infer<typeof JulesCreateSessionRequestSchema>;
 
 export interface SendMessageRequest {
-  message: string;
-}
-
-export interface ApprovePlanRequest {
-  approved: boolean;
-  reason?: string | undefined;
+  prompt: string;
 }
 
 export class JulesClientError extends Error {
@@ -31,6 +26,11 @@ export class JulesClientError extends Error {
     this.name = 'JulesClientError';
   }
 }
+
+// A provider request should never hold a Paperclip heartbeat indefinitely.
+// Long-running work happens inside Jules; the control-plane calls themselves
+// are expected to return promptly.
+const JULES_API_REQUEST_TIMEOUT_MS = 30_000;
 
 export const JulesStateSchema = z.enum([
   'QUEUED',
@@ -59,23 +59,66 @@ export type JulesFailure = z.infer<typeof JulesFailureSchema>;
 
 export const JulesSessionSchema = z.object({
   name: z.string().min(1),
+  title: z.string().optional(),
+  prompt: z.string().optional(),
+  sourceContext: z.object({
+    source: z.string(),
+    githubRepoContext: z.object({
+      startingBranch: z.string()
+    }).optional()
+  }).optional(),
+  createTime: z.string().optional(),
+  updateTime: z.string().optional(),
+  url: z.string().url().optional(),
   state: JulesStateSchema.optional(),
   outputs: z.array(z.unknown()).optional(),
   errorInfo: z.unknown().optional()
 }).catchall(z.unknown());
 
-export const JulesActivitySchema = z.object({
-  id: z.string().min(1),
-  type: z.string(),
-  questionText: z.string().optional(),
-  answered: z.boolean().optional(),
-  planSummary: z.string().optional(),
-  approved: z.boolean().optional()
+export const JulesSessionsResponseSchema = z.object({
+  sessions: z.array(JulesSessionSchema).optional(),
+  nextPageToken: z.string().optional()
 }).catchall(z.unknown());
 
-export const JulesActivitiesResponseSchema = z.object({
-  activities: z.array(JulesActivitySchema).optional()
+const JulesPlanStepSchema = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  description: z.string().optional(),
+  // Live Jules responses may omit this output-only field; their array order
+  // remains the canonical plan order.
+  index: z.number().int().optional(),
 }).catchall(z.unknown());
+
+const JulesActivityContentSchema = z.object({
+  agentMessaged: z.object({ agentMessage: z.string() }).optional(),
+  userMessaged: z.object({ userMessage: z.string() }).optional(),
+  planGenerated: z.object({
+    plan: z.object({
+      id: z.string().min(1),
+      steps: z.array(JulesPlanStepSchema),
+      createTime: z.string().optional(),
+    }).catchall(z.unknown()),
+  }).optional(),
+  planApproved: z.object({ planId: z.string().min(1) }).optional(),
+  progressUpdated: z.object({ title: z.string(), description: z.string().optional() }).optional(),
+  sessionCompleted: z.unknown().optional(),
+  sessionFailed: z.object({ reason: z.string() }).optional(),
+}).catchall(z.unknown());
+
+export const JulesActivitySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  createTime: z.string().optional(),
+  originator: z.string().optional(),
+}).merge(JulesActivityContentSchema).catchall(z.unknown());
+
+export const JulesActivitiesResponseSchema = z.object({
+  activities: z.array(JulesActivitySchema).optional(),
+  nextPageToken: z.string().optional(),
+}).catchall(z.unknown());
+
+export type JulesActivity = z.infer<typeof JulesActivitySchema>;
 
 export type JulesSessionRaw = z.infer<typeof JulesSessionSchema>;
 
@@ -83,6 +126,13 @@ export interface JulesSession {
     name: JulesSessionName;
     id: JulesSessionId;
     state?: string | undefined;
+    title?: string | undefined;
+    prompt?: string | undefined;
+    source?: string | undefined;
+    baseBranch?: string | undefined;
+    createTime?: string | undefined;
+    updateTime?: string | undefined;
+    url?: string | undefined;
     errorInfo?: JulesFailure | undefined;
     rawOutputs?: unknown[] | undefined;
 }
@@ -123,7 +173,11 @@ export class JulesClient {
       ...options.headers,
     };
 
-    const response = await fetch(url, { ...options, headers });
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      signal: options.signal ?? AbortSignal.timeout(JULES_API_REQUEST_TIMEOUT_MS),
+    });
 
     if (!response.ok) {
       let errorText: unknown = 'Unknown error';
@@ -139,8 +193,12 @@ export class JulesClient {
       return null;
     }
 
-    const data = await response.json();
-    return data;
+    try {
+      return await response.json();
+    } catch {
+      // approvePlan and sendMessage deliberately return an empty response body.
+      return null;
+    }
   }
 
   private mapSession(raw: JulesSessionRaw): JulesSession {
@@ -149,6 +207,13 @@ export class JulesClient {
           name,
           id: toJulesSessionId(name),
           state: raw.state,
+          title: raw.title,
+          prompt: raw.prompt,
+          source: raw.sourceContext?.source,
+          baseBranch: raw.sourceContext?.githubRepoContext?.startingBranch,
+          createTime: raw.createTime,
+          updateTime: raw.updateTime,
+          url: raw.url,
           errorInfo: raw.errorInfo ? toJulesFailure(raw.errorInfo) : undefined,
           rawOutputs: raw.outputs
       };
@@ -168,12 +233,28 @@ export class JulesClient {
     return this.mapSession(JulesSessionSchema.parse(data));
   }
 
-  async getActivities(sessionId: JulesSessionId, pageToken?: string) {
-    const url = new URL(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/activities`);
-    if (pageToken) {
-        url.searchParams.append('pageToken', pageToken);
-    }
-    const data = await this.fetchApi(url.pathname + url.search);
+  async listSessions(pageSize = 100, pageToken?: string): Promise<{
+    sessions: JulesSession[];
+    nextPageToken?: string | undefined;
+  }> {
+    const searchParams = new URLSearchParams({ pageSize: String(pageSize) });
+    if (pageToken) searchParams.set('pageToken', pageToken);
+
+    const data = JulesSessionsResponseSchema.parse(
+      await this.fetchApi(`/sessions?${searchParams.toString()}`)
+    );
+    return {
+      sessions: (data.sessions ?? []).map((raw) => this.mapSession(raw)),
+      nextPageToken: data.nextPageToken
+    };
+  }
+
+  async getActivities(sessionId: JulesSessionId, pageToken?: string, pageSize = 100) {
+    const searchParams = new URLSearchParams({ pageSize: String(pageSize) });
+    if (pageToken) searchParams.set('pageToken', pageToken);
+    const data = await this.fetchApi(
+      `/sessions/${encodeURIComponent(sessionId)}/activities?${searchParams.toString()}`,
+    );
     return JulesActivitiesResponseSchema.parse(data);
   }
 
@@ -184,10 +265,9 @@ export class JulesClient {
     });
   }
 
-  async approvePlan(sessionId: JulesSessionId, request: ApprovePlanRequest) {
+  async approvePlan(sessionId: JulesSessionId) {
     return this.fetchApi(`/sessions/${encodeURIComponent(sessionId)}:approvePlan`, {
       method: 'POST',
-      body: JSON.stringify(request)
     });
   }
 }

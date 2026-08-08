@@ -8,6 +8,7 @@ vi.mock('../src/server/jules-client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/server/jules-client')>();
   const MockedJulesClient = vi.fn();
   MockedJulesClient.prototype.createSession = vi.fn().mockResolvedValue({ id: '123', name: 'sessions/123' });
+  MockedJulesClient.prototype.listSessions = vi.fn().mockResolvedValue({ sessions: [] });
   MockedJulesClient.prototype.getSession = vi.fn().mockResolvedValue({ state: 'IN_PROGRESS' });
   MockedJulesClient.prototype.getActivities = vi.fn().mockResolvedValue({ activities: [] });
   MockedJulesClient.prototype.sendMessage = vi.fn();
@@ -39,7 +40,7 @@ beforeAll(() => {
         }
     },
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
-    config: {},
+    config: { env: { JULES_API_KEY: 'test-key' } },
     context: {
 
         task: { id: 'task-1', title: 'Test Task', description: 'Test desc' }
@@ -53,40 +54,70 @@ beforeAll(() => {
     vi.clearAllMocks();
   });
 
-  it('creates new session on first heartbeat', async () => {
+  it('checkpoints a new session as pending before long polling', async () => {
     const abortCtrl = new AbortController();
     abortCtrl.abort();
 
+    const before = Date.now();
     const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
-    expect(res.exitCode).toBe(0);
+    expect(res.exitCode).toBe(1);
+    expect(res.errorCode).toBe('jules_session_pending');
+    expect(res.errorFamily).toBe('transient_upstream');
     expect(res.clearSession).toBe(false);
     expect(res.sessionParams).toBeDefined();
+    expect(new Date(res.retryNotBefore!).getTime()).toBeGreaterThanOrEqual(before + 15 * 1000);
+    expect(new Date(res.retryNotBefore!).getTime()).toBeLessThan(before + 60 * 1000);
 
     const session = sessionCodec.decode(res.sessionParams!);
+    expect(session.sessionId).toBe('123');
     expect(session.julesSessionId).toBe('123');
     expect(session.phase).toBe('RUNNING');
+    expect(res.summary).toContain('Jules session 123 is RUNNING');
+    expect(res.summary).toContain('resume polling');
   });
 
-  it('returns blocking PR review question on COMPLETED state with PR', async () => {
+  it('moves the issue to review on COMPLETED state with PR', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     (JulesClient.prototype.getSession as any).mockResolvedValueOnce({
         state: 'COMPLETED',
         rawOutputs: [{ pullRequest: { url: 'http://pr/1' } }]
     });
 
-    const res = await execute(baseCtx);
+    const checkpoint = await execute(baseCtx);
+    const res = await execute({
+      ...baseCtx,
+      runtime: { ...baseCtx.runtime, sessionParams: checkpoint.sessionParams },
+      authToken: 'jwt-token',
+    } as any);
     expect(res.exitCode).toBe(0);
-    expect(res.clearSession).toBe(false);
-    expect(res.question).toBeDefined();
-    expect(res.question!.prompt).toContain('Please review and merge it');
+    expect(res.clearSession).toBe(true);
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
+    expect(res.resultJson?.issueStatus).toBe('in_review');
   });
 
-  it('handles AWAITING_USER_FEEDBACK by returning question', async () => {
+  it('creates a Paperclip feedback interaction when Jules awaits feedback', async () => {
     (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'AWAITING_USER_FEEDBACK' });
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ id: 'feedback-1', status: 'pending', kind: 'ask_user_questions' }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
 
-    const res = await execute(baseCtx);
+    const checkpoint = await execute(baseCtx);
+    const res = await execute({
+      ...baseCtx,
+      runtime: { ...baseCtx.runtime, sessionParams: checkpoint.sessionParams },
+      authToken: 'jwt-token',
+    } as any);
     expect(res.exitCode).toBe(0);
-    expect(res.question).toBeDefined();
-    expect(res.question!.prompt).toContain('requires feedback');
+    expect(res.resultJson?.issueStatus).toBe('blocked');
+    expect(res.resultJson?.interactionId).toBe('feedback-1');
+    expect(res.question).toBeUndefined();
+    expect(sessionCodec.decode(res.sessionParams!).pendingInteraction).toMatchObject({
+      type: 'user_feedback',
+      paperclipInteractionId: 'feedback-1',
+    });
   });
 });

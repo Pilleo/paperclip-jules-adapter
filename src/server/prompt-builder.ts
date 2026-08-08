@@ -11,6 +11,8 @@ export interface PromptContext {
   failedSessionMessage?: string | undefined;
 }
 
+export const PROMPT_IDENTITY_HASH_VERSION = 2;
+
 export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   let prompt = `Task: ${ctx.title}\n\n`;
   prompt += `Description:\n${ctx.description}\n\n`;
@@ -22,8 +24,9 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   prompt += `Base Branch: ${config.baseBranch}\n\n`;
 
   prompt += `Instructions:\n`;
-  prompt += `- Create a pull request (PR) upon completion.\n`;
-  prompt += `- Include the Paperclip Issue ID (${ctx.issueId}) in the PR description or title.\n`;
+  prompt += `- If repository changes are needed, create a pull request (PR) upon completion.\n`;
+  prompt += `- If no repository changes are needed or the task explicitly requests no changes, explain the result and complete without a PR.\n`;
+  prompt += `- When creating a PR, include the Paperclip Issue ID (${ctx.issueId}) in its description or title.\n`;
   prompt += `- Do not merge the PR automatically.\n`;
   prompt += `- If you are blocked or need clarification, ask a focused question.\n\n`;
 
@@ -39,4 +42,8 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
 
 export function hashPrompt(prompt: string): string {
   return createHash('sha256').update(prompt).digest('hex');
+}
+
+export function hashPromptIdentity(ctx: PromptContext, config: AdapterConfig): string {
+  return hashPrompt(buildPrompt({ ...ctx, runId: "<paperclip-run>" }, config));
 }

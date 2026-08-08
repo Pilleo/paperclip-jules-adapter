@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
-import { JulesClient, JulesClientError } from '../src/server/jules-client';
+import { JulesActivitySchema, JulesClient, JulesClientError } from '../src/server/jules-client';
 
 beforeAll(() => {
     process.env['JULES_API_KEY'] = 'test-key';
@@ -28,11 +28,11 @@ beforeAll(() => {
       status: 204,
     });
 
-    const res = await client.approvePlan('id', { approved: true });
+    const res = await client.approvePlan('id');
     expect(res).toBeNull();
   });
 
-  it('getActivities includes pageToken', async () => {
+  it('gets activities from the session collection endpoint', async () => {
       const client = new JulesClient('test-key');
       global.fetch = vi.fn().mockResolvedValueOnce({
         ok: true,
@@ -41,8 +41,15 @@ beforeAll(() => {
 
       await client.getActivities('sess-1', 'page-123');
       expect(global.fetch).toHaveBeenCalledWith(
-          expect.stringContaining('pageToken=page-123'),
+          'https://jules.googleapis.com/v1alpha/sessions/sess-1/activities?pageSize=100&pageToken=page-123',
           expect.anything()
       );
+  });
+
+  it('accepts a Jules progress activity without a description', () => {
+    expect(JulesActivitySchema.parse({
+      id: 'activity-1',
+      progressUpdated: { title: 'Working' },
+    }).progressUpdated).toEqual({ title: 'Working' });
   });
 });

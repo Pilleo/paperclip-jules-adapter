@@ -39,7 +39,7 @@ beforeAll(() => {
         }
     },
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
-    config: {},
+    config: { env: { JULES_API_KEY: 'test-key' } },
     context: {
 
         task: { id: 'task-1', title: 'Task' }
@@ -50,8 +50,30 @@ beforeAll(() => {
     onLog: vi.fn()
   } as any;
 
+  const activeSessionParams = sessionCodec.encode({
+      version: 1,
+      paperclipIssueId: 'task-1',
+      promptHash: 'active-hash',
+      repository: 'test',
+      source: 'github',
+      baseBranch: 'master',
+      phase: 'RUNNING',
+      sessionId: '123',
+      julesSessionId: '123',
+      attempt: 1,
+      failedSessions: [],
+      createdAt: new Date().toISOString()
+  } as any);
+
+  const resumedCtx = {
+      ...baseCtx,
+      runtime: { ...baseCtx.runtime, sessionParams: activeSessionParams }
+  } as any;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    (JulesClient.prototype.listSessions as any).mockResolvedValue({ sessions: [] });
+    (JulesClient.prototype.getActivities as any).mockResolvedValue({ activities: [] });
   });
 
   it('handles create session failure (transient) and returns RETRY_SCHEDULED', async () => {
@@ -72,47 +94,57 @@ beforeAll(() => {
   });
 
   it('handles polling failure (transient) within heartbeat and loop limits', async () => {
-    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
     (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 500, message: 'Poll failed' });
     vi.mocked(classifyFailure).mockReturnValueOnce('transient');
 
     const abortCtrl = new AbortController();
     setTimeout(() => abortCtrl.abort(), 10);
 
-    const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
-    expect(res.exitCode).toBe(0); // Ends via abort signal returning 0 with state
+    const res = await execute({ ...resumedCtx, abortSignal: abortCtrl.signal } as any);
+    expect(res.exitCode).toBe(1);
+    expect(res.errorCode).toBe('jules_session_pending');
     const session = sessionCodec.decode(res.sessionParams!);
+    expect(session.sessionId).toBe('123');
     expect(session.julesSessionId).toBe('123');
   });
 
   it('handles polling failure (fatal)', async () => {
-    (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
     (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 401, message: 'Auth error' });
     vi.mocked(classifyFailure).mockReturnValueOnce('configuration');
 
     const abortCtrl = new AbortController();
 
-    const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
+    const res = await execute({ ...resumedCtx, abortSignal: abortCtrl.signal } as any);
     expect(res.exitCode).toBe(1);
     expect(res.errorCode).toBe('jules_polling_error');
   });
 
   it('handles COMPLETED state with false success (no PR)', async () => {
-     (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
      (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'COMPLETED' });
+     global.fetch = vi.fn()
+       .mockResolvedValueOnce({
+         ok: true,
+         status: 201,
+         json: async () => ({ id: 'interaction-1', status: 'pending' }),
+       })
+       .mockResolvedValueOnce({ ok: true, status: 200 });
 
-     const res = await execute(baseCtx);
+     const res = await execute({ ...resumedCtx, authToken: 'jwt-token' });
      expect(res.exitCode).toBe(0);
-     expect(res.question).toBeDefined(); // Now blocked with question
+     expect(res.question).toBeUndefined();
+     expect(res.resultJson?.issueStatus).toBe('blocked');
+     expect(sessionCodec.decode(res.sessionParams!)?.pendingInteraction).toMatchObject({
+       type: 'completion_confirmation',
+       paperclipInteractionId: 'interaction-1',
+     });
   });
 
   it('handles FAILED jules state with retry', async () => {
-      (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
       (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
       vi.mocked(shouldRetry).mockReturnValueOnce(true); // Retry the explicitly failed session
 
       const abortCtrl = new AbortController();
-      const res = await execute({ ...baseCtx, abortSignal: abortCtrl.signal } as any);
+      const res = await execute({ ...resumedCtx, abortSignal: abortCtrl.signal } as any);
 
       expect(res.exitCode).toBe(1);
       expect(res.errorCode).toBe('jules_transient_failure');
@@ -121,11 +153,10 @@ beforeAll(() => {
   });
 
   it('handles FAILED jules state without retry (exhausted)', async () => {
-        (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '123', name: 'sessions/123' });
         (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'FAILED' });
         vi.mocked(shouldRetry).mockReturnValueOnce(false);
 
-        const res = await execute(baseCtx);
+        const res = await execute(resumedCtx);
 
         expect(res.exitCode).toBe(1);
         expect(res.errorCode).toBe('jules_task_failure');
@@ -165,6 +196,7 @@ beforeAll(() => {
 
       expect(created).toBe(true);
       const newSession = sessionCodec.decode(res.sessionParams!);
+      expect(newSession.sessionId).toBe('124');
       expect(newSession.julesSessionId).toBe('124');
   });
 });

@@ -5,13 +5,14 @@ import { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@pa
 import { sanitizeError } from "./error-sanitizer.js";
 
 export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
-  const config = ctx.config?.['adapterSchemaValues'] || ctx.config || {};
+  const runtimeConfig = ctx.config || {};
+  const config = runtimeConfig['adapterSchemaValues'] || runtimeConfig;
 
   let validatedConfig: AdapterConfig;
   let apiKey: string;
   try {
      validatedConfig = validateConfig(config);
-     apiKey = requireJulesApiKey();
+     apiKey = requireJulesApiKey(runtimeConfig);
   } catch (err: unknown) {
       const diagnosticKeys = Object.keys(config).sort().join(", ") || "(none)";
       return {

@@ -21,6 +21,7 @@ export function createServerAdapter(): ServerAdapterModule {
         execute,
         testEnvironment,
         sessionCodec,
+        supportsLocalAgentJwt: true,
         models: [],
         agentConfigurationDoc: `
 # Google Jules adapter
@@ -32,6 +33,10 @@ Required configuration:
 - source: Jules source resource, for example sources/github/Pilleo/mazewall
 - repository: GitHub owner/repository, for example Pilleo/mazewall
 - baseBranch: branch Jules starts from
+Timing is intentionally fixed: the adapter checkpoints a new Jules session
+immediately, polls every five minutes, and watches resumed work for up to six
+hours per Paperclip run. Active work is continued through Paperclip's durable
+retry path instead of being reported as successfully completed.
 `,
         getConfigSchema: () => julesConfigSchema,
     };

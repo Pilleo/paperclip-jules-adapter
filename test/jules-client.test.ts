@@ -99,19 +99,52 @@ beforeAll(() => {
     expect(result.id).toEqual('123');
   });
 
+  it('listSessions maps provider sessions and pagination', async () => {
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        sessions: [{
+          name: 'sessions/123',
+          title: 'Task',
+          prompt: 'Paperclip Issue ID: issue-1',
+          state: 'IN_PROGRESS',
+          sourceContext: {
+            source: 'sources/github/example/repo',
+            githubRepoContext: { startingBranch: 'main' }
+          }
+        }],
+        nextPageToken: 'next-token'
+      }),
+    });
+
+    const result = await client.listSessions(100, 'page-token');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://jules.googleapis.com/v1alpha/sessions?pageSize=100&pageToken=page-token',
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(result.nextPageToken).toBe('next-token');
+    expect(result.sessions[0]).toMatchObject({
+      id: '123',
+      source: 'sources/github/example/repo',
+      baseBranch: 'main',
+      state: 'IN_PROGRESS'
+    });
+  });
+
   it('sendMessage sends correct request', async () => {
       (global.fetch as any).mockResolvedValueOnce({
         ok: true,
         json: async () => ({}),
       });
 
-      await client.sendMessage(asJulesSessionId('123'), { message: 'hello' });
+      await client.sendMessage(asJulesSessionId('123'), { prompt: 'hello' });
 
       expect(global.fetch).toHaveBeenCalledWith(
         'https://jules.googleapis.com/v1alpha/sessions/123:sendMessage',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ message: 'hello' })
+          body: JSON.stringify({ prompt: 'hello' })
         })
       );
   });
@@ -122,13 +155,12 @@ beforeAll(() => {
           json: async () => ({}),
         });
 
-        await client.approvePlan(asJulesSessionId('123'), { approved: true });
+        await client.approvePlan(asJulesSessionId('123'));
 
         expect(global.fetch).toHaveBeenCalledWith(
           'https://jules.googleapis.com/v1alpha/sessions/123:approvePlan',
           expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({ approved: true })
+            method: 'POST'
           })
         );
   });

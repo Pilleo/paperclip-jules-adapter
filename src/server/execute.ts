@@ -1,27 +1,215 @@
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, requireJulesApiKey } from "./config.js";
 import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
-import { JulesClient, extractPullRequestUrl } from "./jules-client.js";
-import { buildPrompt, hashPrompt } from "./prompt-builder.js";
+import { JulesActivity, JulesClient, extractPullRequestUrl } from "./jules-client.js";
+import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
 import { shouldRetry, getRetryNotBefore } from "./retry-policy.js";
-import { asPaperclipId } from "./brands.js";
+import { asJulesActivityId, asJulesSessionId, asPaperclipId } from "./brands.js";
 import { CtxContextSchema, HostContextSchema } from "./context-schemas.js";
 import { sanitizeError } from "./error-sanitizer.js";
+import { deleteStoredSession, loadStoredSession, saveStoredSession } from "./session-store.js";
+import {
+  createNoPrCompletionInteraction,
+  addJulesActivityComment,
+  createJulesFeedbackInteraction,
+  createJulesPlanApprovalInteraction,
+  getPaperclipInteraction,
+  moveIssueToBlocked,
+  moveIssueToDone,
+  moveIssueToReview,
+  PaperclipClientError,
+  type PaperclipInteraction,
+} from "./paperclip-client.js";
 
-function createAcknowledgeQuestion(sessionId: string) {
+const JULES_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const JULES_WATCH_WINDOW_MS = 6 * 60 * 60 * 1000;
+const JULES_CONTINUATION_DELAY_MS = 5 * 60 * 1000;
+const JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS = 15 * 1000;
+
+function readContextString(context: Record<string, unknown>, key: string): string | null {
+  const value = context[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readContextRecord(context: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = context[key];
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function completionInteractionResult(
+  session: JulesAdapterSessionV1,
+  issueStatus: "blocked" | "done",
+  summary: string,
+  clearSession: boolean,
+): AdapterExecutionResult {
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    sessionParams: serializeSession(session),
+    sessionDisplayId: session.julesSessionId ?? null,
+    summary,
+    resultJson: {
+      provider: "jules",
+      julesSessionId: session.julesSessionId,
+      julesState: session.julesState ?? session.phase,
+      issueStatus,
+      interactionId: session.pendingInteraction?.paperclipInteractionId,
+      completedWithoutPr: true,
+    },
+    clearSession,
+  };
+}
+
+function paperclipInteractionFailure(
+  session: JulesAdapterSessionV1,
+  error: unknown,
+): AdapterExecutionResult {
+  const status = error instanceof PaperclipClientError ? error.status : null;
+  const transient = status === null || status === 408 || status === 429 || status >= 500;
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorCode: "paperclip_completion_interaction_failed",
+    errorFamily: transient ? "transient_upstream" : null,
+    errorMessage: sanitizeError(error),
+    retryNotBefore: transient
+      ? new Date(Date.now() + JULES_CONTINUATION_DELAY_MS).toISOString()
+      : null,
+    sessionParams: serializeSession(session),
+    sessionDisplayId: session.julesSessionId ?? null,
+    clearSession: false,
+  };
+}
+
+function createProgressSummary(session: JulesAdapterSessionV1): string {
+    const state = session.julesState || session.phase || "RUNNING";
+    return `Jules session ${session.julesSessionId} is ${state}; Paperclip will resume polling it on the next heartbeat.`;
+}
+
+function createPendingResult(
+  session: JulesAdapterSessionV1,
+  initialActivityCheck = false,
+): AdapterExecutionResult {
+    const summary = createProgressSummary(session);
     return {
-        prompt: `Jules session ${sessionId} completed but did not create a PR. Check the Jules UI for details.`,
-        choices: [{ key: "ack", label: "Acknowledge" }]
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "jules_session_pending",
+      errorFamily: "transient_upstream",
+      errorMessage: `Jules session ${session.julesSessionId} is still active`,
+      retryNotBefore: new Date(
+        Date.now() + (initialActivityCheck ? JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS : JULES_CONTINUATION_DELAY_MS),
+      ).toISOString(),
+      sessionParams: serializeSession(session),
+      sessionDisplayId: session.julesSessionId || null,
+      summary,
+      resultJson: {
+        provider: "jules",
+        julesSessionId: session.julesSessionId,
+        julesState: session.julesState ?? session.phase,
+        pending: true,
+      },
+      clearSession: false,
     };
 }
 
-function createPrReviewQuestion(prUrl: string) {
-    return {
-        prompt: `Jules created a PR: ${prUrl}. Please review and merge it. This task will remain in progress until manually completed or canceled.`,
-        choices: [{ key: "ack", label: "Acknowledge (keeps task active)" }]
-    };
+async function persistSessionBestEffort(
+  session: JulesAdapterSessionV1,
+  onLog: AdapterExecutionContext["onLog"] | undefined,
+): Promise<void> {
+  try {
+    await saveStoredSession(session);
+  } catch (error) {
+    if (onLog) {
+      await onLog("stderr", `[jules] Could not persist the local recovery record: ${sanitizeError(error)}\n`);
+    }
+  }
+}
+
+function sortedActivities(activities: JulesActivity[]): JulesActivity[] {
+  return [...activities].sort((left, right) =>
+    (left.createTime ?? "").localeCompare(right.createTime ?? "") || left.id.localeCompare(right.id));
+}
+
+function activityComment(activity: JulesActivity): string | null {
+  if (activity.planGenerated) {
+    const steps = [...activity.planGenerated.plan.steps]
+      .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+      .map((step, position) =>
+        `${(step.index ?? position) + 1}. **${step.title}**${step.description ? ` — ${step.description}` : ""}`)
+      .join("\n");
+    return `**Jules plan**\n\n${steps}`;
+  }
+  if (activity.progressUpdated) {
+    const description = activity.progressUpdated.description?.trim();
+    return `**Jules progress: ${activity.progressUpdated.title}**${description ? `\n\n${description}` : ""}`;
+  }
+  return null;
+}
+
+function latestAgentMessage(activities: JulesActivity[]): JulesActivity | null {
+  return [...activities].reverse().find((activity) => Boolean(activity.agentMessaged)) ?? null;
+}
+
+function latestPlan(activities: JulesActivity[]): JulesActivity | null {
+  return [...activities].reverse().find((activity) => Boolean(activity.planGenerated)) ?? null;
+}
+
+function planMarkdown(activity: JulesActivity | null): string {
+  return activity
+    ? activityComment(activity) ?? "Jules is waiting for plan approval. Open the Jules session for the generated plan."
+    : "Jules is waiting for plan approval. Open the Jules session for the generated plan.";
+}
+
+function feedbackAnswer(result: unknown): string | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
+  const answers = (result as Record<string, unknown>)["answers"];
+  if (!Array.isArray(answers)) return null;
+  for (const answer of answers) {
+    if (typeof answer !== "object" || answer === null || Array.isArray(answer)) continue;
+    const otherText = (answer as Record<string, unknown>)["otherText"];
+    if (typeof otherText === "string" && otherText.trim().length > 0) return otherText.trim();
+  }
+  return null;
+}
+
+async function listAllActivities(client: JulesClient, sessionId: NonNullable<JulesAdapterSessionV1["julesSessionId"]>): Promise<JulesActivity[]> {
+  const activities: JulesActivity[] = [];
+  let pageToken: string | undefined;
+  do {
+    const page = await client.getActivities(sessionId, pageToken);
+    activities.push(...(page.activities ?? []));
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return sortedActivities(activities);
+}
+
+async function mirrorNewActivities(
+  client: JulesClient,
+  session: JulesAdapterSessionV1,
+  taskId: string,
+  authToken: string | undefined,
+  runId: string | undefined,
+  onLog: AdapterExecutionContext["onLog"] | undefined,
+): Promise<JulesActivity[]> {
+  const activities = await listAllActivities(client, session.julesSessionId!);
+  const delivered = new Set(session.deliveredActivityIds ?? []);
+  for (const activity of activities) {
+    const body = activityComment(activity);
+    if (!body || delivered.has(activity.id)) continue;
+    await addJulesActivityComment(taskId, activity.id, body, session.julesSessionUrl, authToken, runId);
+    delivered.add(activity.id);
+    session.deliveredActivityIds = [...delivered].slice(-200);
+    await persistSessionBestEffort(session, onLog);
+  }
+  return activities;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -55,12 +243,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
   const parsedHostCtx = HostContextSchema.parse(ctx);
 
-  const apiKey = requireJulesApiKey();
+  const apiKey = requireJulesApiKey(ctx.config);
   const client = new JulesClient(apiKey);
 
   let session = sessionCodec.decode(ctx.runtime.sessionParams);
-  const pollInterval = config.pollIntervalSeconds * 1000;
-  const heartbeatDeadline = Date.now() + (config.heartbeatPollWindowSeconds * 1000);
+  const canonicalSessionId = sessionCodec.getCanonicalSessionId(ctx.runtime.sessionParams);
+  const heartbeatDeadline = Date.now() + JULES_WATCH_WINDOW_MS;
 
   const abortSignal = parsedHostCtx.abortSignal || new AbortController().signal;
 
@@ -69,6 +257,234 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const taskTitle = parsedCtxContext.task.title;
   const taskDescription = parsedCtxContext.task.description;
 
+  // Paperclip's external-adapter resume path normalizes persisted state to the
+  // canonical `{ sessionId }` shape. Rebuild the adapter-local polling state
+  // from that identity so a heartbeat resumes the remote Jules session rather
+  // than creating another one.
+  if (!session && canonicalSessionId) {
+    session = {
+      version: 1,
+      paperclipIssueId: taskId,
+      promptHash: "",
+      repository: config.repository,
+      source: config.source,
+      baseBranch: config.baseBranch,
+      phase: "RUNNING",
+      sessionId: canonicalSessionId,
+      julesSessionId: asJulesSessionId(canonicalSessionId),
+      attempt: 1,
+      failedSessions: [],
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  if (!session) {
+    try {
+      session = await loadStoredSession(taskId, config.source, config.baseBranch);
+      if (session && ctx.onLog) {
+        await ctx.onLog(
+          "stdout",
+          `[jules] Restored session ${session.julesSessionId} from the local recovery record.\n`,
+        );
+      }
+    } catch (error) {
+      if (ctx.onLog) {
+        await ctx.onLog("stderr", `[jules] Could not read the local recovery record: ${sanitizeError(error)}\n`);
+      }
+    }
+  }
+
+  const paperclipWake = readContextRecord(parsedCtxContext, "paperclipWake");
+  const interactionId = readContextString(parsedCtxContext, "interactionId") ??
+    readContextString(paperclipWake, "interactionId");
+  const interactionKind = readContextString(parsedCtxContext, "interactionKind") ??
+    readContextString(paperclipWake, "interactionKind");
+  const interactionStatus = readContextString(parsedCtxContext, "interactionStatus") ??
+    readContextString(paperclipWake, "interactionStatus");
+  const pendingCompletion = session?.pendingInteraction?.type === "completion_confirmation"
+    ? session.pendingInteraction
+    : null;
+  const pendingProviderInteraction = session?.pendingInteraction &&
+    (session.pendingInteraction.type === "user_feedback" || session.pendingInteraction.type === "plan_approval")
+    ? session.pendingInteraction
+    : null;
+  const isCompletionResolution = interactionKind === "request_confirmation" &&
+    (interactionStatus === "accepted" || interactionStatus === "rejected");
+
+  if (!pendingCompletion && !pendingProviderInteraction && isCompletionResolution) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "paperclip_completion_interaction_missing_state",
+      errorMessage: "Resolved Paperclip completion interaction has no matching persisted Jules state",
+      sessionParams: session ? serializeSession(session) : null,
+      sessionDisplayId: session?.julesSessionId ?? null,
+      clearSession: false,
+    };
+  }
+
+  if (pendingCompletion && isCompletionResolution) {
+    if (interactionId !== pendingCompletion.paperclipInteractionId) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "paperclip_completion_interaction_mismatch",
+        errorMessage: "Resolved Paperclip interaction does not match the pending Jules completion confirmation",
+        sessionParams: serializeSession(session!),
+        sessionDisplayId: session!.julesSessionId ?? null,
+        clearSession: false,
+      };
+    }
+
+    try {
+      await deleteStoredSession(taskId, config.source, config.baseBranch);
+      if (interactionStatus === "accepted") {
+        await moveIssueToDone(taskId, session!.julesSessionId!, ctx.authToken, ctx.runId);
+        return completionInteractionResult(
+          session!,
+          "done",
+          `Confirmed Jules session ${session!.julesSessionId} completed without a PR; marked the Paperclip issue done.`,
+          true,
+        );
+      }
+      return completionInteractionResult(
+        session!,
+        "blocked",
+        `Rejected completion of Jules session ${session!.julesSessionId}; the Paperclip issue remains blocked for manual follow-up.`,
+        true,
+      );
+    } catch (error) {
+      return paperclipInteractionFailure(session!, error);
+    }
+  }
+
+  // Paperclip normally supplies the resolved interaction in the wake context.  Do
+  // not depend on that being present, though: some wake paths only preserve the
+  // generic issue context.  The persisted card is the authority in that case.
+  let storedPendingInteraction: PaperclipInteraction | null = null;
+  if (pendingProviderInteraction) {
+    try {
+      storedPendingInteraction = await getPaperclipInteraction(
+        taskId,
+        pendingProviderInteraction.paperclipInteractionId!,
+        ctx.authToken,
+        ctx.runId,
+      );
+    } catch (error) {
+      if (ctx.onLog) {
+        await ctx.onLog("stderr", `[jules] Could not read the pending Paperclip interaction: ${sanitizeError(error)}\n`);
+      }
+    }
+  }
+  const providerInteractionId = interactionId ??
+    (storedPendingInteraction?.status !== "pending" ? pendingProviderInteraction?.paperclipInteractionId : null);
+  const providerInteractionKind = interactionKind ?? storedPendingInteraction?.kind ?? null;
+  const providerInteractionStatus = interactionStatus ?? storedPendingInteraction?.status ?? null;
+  const isProviderResolution = providerInteractionStatus === "answered" ||
+    (providerInteractionKind === "request_confirmation" &&
+      (providerInteractionStatus === "accepted" || providerInteractionStatus === "rejected"));
+
+  if (pendingProviderInteraction && isProviderResolution) {
+    if (providerInteractionId !== pendingProviderInteraction.paperclipInteractionId) {
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "paperclip_provider_interaction_mismatch",
+        errorMessage: "Resolved Paperclip interaction does not match the pending Jules interaction",
+        sessionParams: serializeSession(session!),
+        sessionDisplayId: session!.julesSessionId ?? null,
+        clearSession: false,
+      };
+    }
+    try {
+      if (pendingProviderInteraction.type === "user_feedback") {
+        if (providerInteractionStatus !== "answered") {
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            sessionParams: serializeSession(session!),
+            sessionDisplayId: session!.julesSessionId ?? null,
+            summary: "Jules feedback request remains blocked until a Paperclip answer is submitted.",
+            resultJson: { provider: "jules", issueStatus: "blocked" },
+            clearSession: false,
+          };
+        }
+        const answer = storedPendingInteraction ? feedbackAnswer(storedPendingInteraction.result) : null;
+        if (!answer) {
+          const nextAttempt = (session!.feedbackInteractionAttempt ?? 0) + 1;
+          const replacement = await createJulesFeedbackInteraction(
+            taskId,
+            session!.julesSessionId!,
+            pendingProviderInteraction.julesActivityId,
+            pendingProviderInteraction.question,
+            ctx.authToken,
+            nextAttempt,
+            ctx.runId,
+          );
+          session!.feedbackInteractionAttempt = nextAttempt;
+          session!.pendingInteraction = {
+            ...pendingProviderInteraction,
+            paperclipInteractionId: replacement.id,
+            createdAt: new Date().toISOString(),
+          };
+          await persistSessionBestEffort(session!, ctx.onLog);
+          await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            sessionParams: serializeSession(session!),
+            sessionDisplayId: session!.julesSessionId ?? null,
+            summary: "Jules did not receive an empty reply; Paperclip opened a new reply card.",
+            resultJson: { provider: "jules", issueStatus: "blocked", interactionId: replacement.id },
+            clearSession: false,
+          };
+        }
+        await client.sendMessage(session!.julesSessionId!, { prompt: answer });
+      } else {
+        if (providerInteractionStatus === "rejected") {
+          await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            sessionParams: serializeSession(session!),
+            sessionDisplayId: session!.julesSessionId ?? null,
+            summary: "Jules plan was not approved; the Paperclip issue remains blocked for manual follow-up in Jules.",
+            resultJson: { provider: "jules", issueStatus: "blocked" },
+            clearSession: false,
+          };
+        }
+        if (providerInteractionStatus !== "accepted") {
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorCode: "paperclip_plan_approval_missing",
+            errorMessage: "The Jules plan approval interaction was not accepted",
+            sessionParams: serializeSession(session!),
+            sessionDisplayId: session!.julesSessionId ?? null,
+            clearSession: false,
+          };
+        }
+        await client.approvePlan(session!.julesSessionId!);
+      }
+      session!.pendingInteraction = undefined;
+      session!.phase = "RUNNING";
+      await persistSessionBestEffort(session!, ctx.onLog);
+      // Jules can take a few seconds to leave its waiting state.  Polling it in
+      // this same heartbeat would see the old state and create a duplicate card.
+      return createPendingResult(session!, true);
+    } catch (error) {
+      return paperclipInteractionFailure(session!, error);
+    }
+  }
+
+  let createdSessionThisRun = false;
   if (!session || session.phase === 'RETRY_SCHEDULED') {
     const isRetry = session?.phase === 'RETRY_SCHEDULED';
     const failedSessions = session?.failedSessions || [];
@@ -94,7 +510,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const prompt = buildPrompt(promptContext, config);
-    const pHash = hashPrompt(prompt);
+    const pHash = hashPromptIdentity(promptContext, config);
 
     try {
       const julesSession = await client.createSession({
@@ -114,15 +530,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         version: 1,
         paperclipIssueId: taskId,
         promptHash: pHash,
+        promptHashVersion: PROMPT_IDENTITY_HASH_VERSION,
         repository: config.repository,
         source: config.source,
         baseBranch: config.baseBranch,
         phase: 'RUNNING',
+        sessionId: julesSession.id,
         julesSessionId: julesSession.id,
+        julesSessionUrl: julesSession.url,
         attempt,
         failedSessions,
         createdAt: new Date().toISOString()
       };
+      createdSessionThisRun = true;
+      await persistSessionBestEffort(session, ctx.onLog);
 
     } catch (error) {
       const classification = classifyFailure(error);
@@ -141,6 +562,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             version: 1,
             paperclipIssueId: taskId,
             promptHash: pHash,
+            promptHashVersion: PROMPT_IDENTITY_HASH_VERSION,
             repository: config.repository,
             source: config.source,
             baseBranch: config.baseBranch,
@@ -170,6 +592,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (!session) throw new Error("Session is null after initialization");
 
+  // Persist the provider identity before waiting on Jules. If Paperclip or the
+  // adapter process restarts during a long Jules job, the next run can resume
+  // this exact remote session instead of creating another one.
+  if (createdSessionThisRun) {
+    if (ctx.onLog) {
+      await ctx.onLog('stdout', `[jules] Created session ${session.julesSessionId}; checkpointing before long polling.\n`);
+    }
+    return createPendingResult(session, true);
+  }
+
   const currentPromptContext = {
     issueId: taskId,
     runId: ctx.runId,
@@ -177,8 +609,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     description: taskDescription,
     isRetry: false
   };
-  const currentHash = hashPrompt(buildPrompt(currentPromptContext, config));
-  if (session.promptHash !== currentHash && session.attempt === 1) {
+  const currentHash = hashPromptIdentity(currentPromptContext, config);
+  if (session.promptHashVersion !== PROMPT_IDENTITY_HASH_VERSION) {
+    session.promptHash = currentHash;
+    session.promptHashVersion = PROMPT_IDENTITY_HASH_VERSION;
+    await persistSessionBestEffort(session, ctx.onLog);
+  } else if (session.promptHash !== currentHash && session.attempt === 1) {
     if (ctx.onLog) {
         await ctx.onLog('stderr', `[WARN] Task identity changed. Using original prompt hash for session ${session.julesSessionId}`);
     }
@@ -192,10 +628,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const state = julesSession.state || 'UNKNOWN';
       session.julesState = state;
       session.lastPolledAt = new Date().toISOString();
+      if (julesSession.url) {
+          session.julesSessionUrl = julesSession.url;
+      }
       const prUrl = extractPullRequestUrl(julesSession);
       if (prUrl) {
           session.currentPrUrl = prUrl;
       }
+
+      const activities = await mirrorNewActivities(client, session, taskId, ctx.authToken, ctx.runId, ctx.onLog);
 
       const stateMachineRes = handleJulesState(state, !!session.currentPrUrl);
       session.phase = stateMachineRes.nextPhase;
@@ -203,26 +644,78 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (stateMachineRes.isTerminal) {
          if (session.phase === 'COMPLETED') {
              if (!stateMachineRes.isSuccess) {
-                 return {
-                     exitCode: 0,
-                     signal: null,
-                     timedOut: false,
-                     sessionParams: serializeSession(session),
-                     question: createAcknowledgeQuestion(session.julesSessionId),
-                     clearSession: false
-                 };
+                 try {
+                   let completion = session.pendingInteraction?.type === "completion_confirmation"
+                     ? session.pendingInteraction
+                     : null;
+                   if (!completion) {
+                     const question = `Jules session ${session.julesSessionId} completed without creating a PR. Is this task complete?`;
+                     const interaction = await createNoPrCompletionInteraction(
+                       taskId,
+                       session.julesSessionId!,
+                       session.julesSessionUrl,
+                       ctx.authToken,
+                       ctx.runId,
+                     );
+                     completion = {
+                       type: "completion_confirmation",
+                       paperclipInteractionId: interaction.id,
+                       question,
+                       createdAt: new Date().toISOString(),
+                     };
+                     session.pendingInteraction = completion;
+                     await persistSessionBestEffort(session, ctx.onLog);
+
+                     if (interaction.status === "accepted") {
+                       await deleteStoredSession(taskId, config.source, config.baseBranch);
+                       await moveIssueToDone(taskId, session.julesSessionId!, ctx.authToken, ctx.runId);
+                       return completionInteractionResult(
+                         session,
+                         "done",
+                         `Confirmed Jules session ${session.julesSessionId} completed without a PR; marked the Paperclip issue done.`,
+                         true,
+                       );
+                     }
+                     if (interaction.status === "rejected") {
+                       await deleteStoredSession(taskId, config.source, config.baseBranch);
+                       return completionInteractionResult(
+                         session,
+                         "blocked",
+                         `Rejected completion of Jules session ${session.julesSessionId}; the Paperclip issue remains blocked for manual follow-up.`,
+                         true,
+                       );
+                     }
+                   }
+
+                   await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+                   return completionInteractionResult(
+                     session,
+                     "blocked",
+                     `Jules session ${session.julesSessionId} completed without a PR and awaits confirmation in Paperclip.`,
+                     false,
+                   );
+                 } catch (error) {
+                   return paperclipInteractionFailure(session, error);
+                 }
              }
 
+             await moveIssueToReview(taskId, session.currentPrUrl!, ctx.authToken, ctx.runId);
+             await deleteStoredSession(taskId, config.source, config.baseBranch);
+             if (ctx.onLog) {
+                 await ctx.onLog(
+                     "stdout",
+                     `[jules] Session ${session.julesSessionId} completed; cleared its recovery state. Reopening this Paperclip issue will start a new Jules task.\n`,
+                 );
+             }
              return {
                  exitCode: 0,
                  signal: null,
                  timedOut: false,
                  sessionParams: serializeSession(session),
                  sessionDisplayId: session.julesSessionId || null,
-                 summary: `Jules created PR: ${session.currentPrUrl}`,
-                 resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl },
-                 question: createPrReviewQuestion(session.currentPrUrl!),
-                 clearSession: false
+                 summary: `Jules session ${session.julesSessionId} completed, created a PR, and moved the Paperclip issue to review: ${session.currentPrUrl}`,
+                 resultJson: { provider: "jules", julesSessionId: session.julesSessionId, prUrl: session.currentPrUrl, issueStatus: "in_review" },
+                 clearSession: true
              };
          } else if (session.phase === 'FAILED') {
              const failureDetails = julesSession.errorInfo || {};
@@ -264,26 +757,89 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       if (stateMachineRes.requiresReturn) {
-          return {
-             exitCode: 0,
-             signal: null,
-             timedOut: false,
-             sessionParams: serializeSession(session),
-             question: {
-                 prompt: `Jules session ${session.julesSessionId} requires feedback (${session.phase}). Please review in Google Jules UI.`,
-                 choices: [{ key: "ack", label: "Acknowledge" }]
-             },
-             clearSession: false
-          };
+          try {
+            if (session.phase === "WAITING_FOR_FEEDBACK") {
+              let pending = session.pendingInteraction?.type === "user_feedback"
+                ? session.pendingInteraction
+                : null;
+              if (!pending) {
+                const activity = latestAgentMessage(activities);
+                const question = activity?.agentMessaged?.agentMessage ??
+                  "Jules is waiting for feedback. Open the Jules session for the full question.";
+                const activityId = activity?.id ?? "awaiting-user-feedback";
+                const interactionAttempt = (session.feedbackInteractionAttempt ?? 0) + 1;
+                const interaction = await createJulesFeedbackInteraction(
+                  taskId, session.julesSessionId!, activityId, question, ctx.authToken, interactionAttempt, ctx.runId,
+                );
+                session.feedbackInteractionAttempt = interactionAttempt;
+                pending = {
+                  type: "user_feedback",
+                  julesActivityId: asJulesActivityId(activityId),
+                  paperclipInteractionId: interaction.id,
+                  question,
+                  createdAt: new Date().toISOString(),
+                };
+                session.pendingInteraction = pending;
+                await persistSessionBestEffort(session, ctx.onLog);
+              }
+              await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+              return {
+                exitCode: 0,
+                signal: null,
+                timedOut: false,
+                sessionParams: serializeSession(session),
+                sessionDisplayId: session.julesSessionId ?? null,
+                summary: `Jules session ${session.julesSessionId} awaits feedback in Paperclip.`,
+                resultJson: { provider: "jules", issueStatus: "blocked", interactionId: pending.paperclipInteractionId },
+                clearSession: false,
+              };
+            }
+
+            if (session.phase === "WAITING_FOR_PLAN_APPROVAL") {
+              let pending = session.pendingInteraction?.type === "plan_approval"
+                ? session.pendingInteraction
+                : null;
+              if (!pending) {
+                const activity = latestPlan(activities);
+                const plan = planMarkdown(activity);
+                const activityId = activity?.id ?? "awaiting-plan-approval";
+                const interaction = await createJulesPlanApprovalInteraction(
+                  taskId, session.julesSessionId!, activityId, plan, ctx.authToken, ctx.runId,
+                );
+                pending = {
+                  type: "plan_approval",
+                  julesActivityId: asJulesActivityId(activityId),
+                  paperclipInteractionId: interaction.id,
+                  question: plan,
+                  createdAt: new Date().toISOString(),
+                };
+                session.pendingInteraction = pending;
+                await persistSessionBestEffort(session, ctx.onLog);
+              }
+              await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
+              return {
+                exitCode: 0,
+                signal: null,
+                timedOut: false,
+                sessionParams: serializeSession(session),
+                sessionDisplayId: session.julesSessionId ?? null,
+                summary: `Jules session ${session.julesSessionId} awaits plan approval in Paperclip.`,
+                resultJson: { provider: "jules", issueStatus: "blocked", interactionId: pending.paperclipInteractionId },
+                clearSession: false,
+              };
+            }
+          } catch (error) {
+            return paperclipInteractionFailure(session, error);
+          }
       }
 
-      await sleep(pollInterval, abortSignal);
+      await sleep(JULES_POLL_INTERVAL_MS, abortSignal);
 
     } catch (error) {
       const classification = classifyFailure(error);
 
       if (classification === 'transient') {
-         await sleep(pollInterval, abortSignal);
+         await sleep(JULES_POLL_INTERVAL_MS, abortSignal);
          continue;
       } else {
           return {
@@ -300,11 +856,5 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  return {
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    sessionParams: serializeSession(session),
-    clearSession: false
-  };
+  return createPendingResult(session);
 }

@@ -1,17 +1,9 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { testEnvironment } from '../src/server/test-environment';
 import { JulesClient } from '../src/server/jules-client';
 import { AdapterEnvironmentTestContext } from '@paperclipai/adapter-utils';
 
 vi.mock('../src/server/jules-client');
-
-beforeAll(() => {
-    process.env['JULES_API_KEY'] = 'test-key';
-  });
-
-  afterAll(() => {
-    delete process.env['JULES_API_KEY'];
-  });
 
   describe('testEnvironment', () => {
     const baseCtx: AdapterEnvironmentTestContext = {
@@ -20,6 +12,7 @@ beforeAll(() => {
         config: {
             source: 'github', repository: 'repo', baseBranch: 'master',
             pollIntervalSeconds: 10, heartbeatPollWindowSeconds: 30,
+            env: { JULES_API_KEY: 'test-key' },
 
         }
     };
@@ -38,6 +31,16 @@ beforeAll(() => {
         const res = await testEnvironment({ config: {} } as any);
         expect(res.status).toBe('fail');
         expect(res.checks[0]!.code).toBe('config_validation_failed');
+    });
+
+    it('fails with binding guidance even if the server environment has a key', async () => {
+        const prior = process.env['JULES_API_KEY'];
+        process.env['JULES_API_KEY'] = 'server-only-key';
+        const res = await testEnvironment({ ...baseCtx, config: { source: 'github', repository: 'repo' } });
+        expect(res.status).toBe('fail');
+        expect(res.checks[0]!.message).toContain('env.JULES_API_KEY');
+        if (prior === undefined) delete process.env['JULES_API_KEY'];
+        else process.env['JULES_API_KEY'] = prior;
     });
 
     it('returns fail status correctly on auth errors', async () => {

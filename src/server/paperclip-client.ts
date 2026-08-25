@@ -66,7 +66,7 @@ async function paperclipRequest(
 
 async function moveIssue(
   issueId: string,
-  status: "blocked" | "done" | "in_review",
+  status: "blocked" | "done" | "in_review" | "in_progress",
   authToken: string | undefined,
   comment?: string,
   runId?: string,
@@ -129,6 +129,15 @@ export async function moveIssueToReview(
     }, runId);
   }
   await moveIssue(issueId, "in_review", authToken, `Jules completed this task and created PR: ${prUrl}`, runId);
+}
+
+export async function moveIssueToInProgress(
+  issueId: string,
+  authToken: string | undefined,
+  comment: string,
+  runId?: string,
+): Promise<void> {
+  await moveIssue(issueId, "in_progress", authToken, comment, runId);
 }
 
 export async function moveIssueToBlocked(

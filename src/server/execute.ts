@@ -22,6 +22,7 @@ import {
   createJulesPlanApprovalInteraction,
   getPaperclipInteraction,
   moveIssueToBlocked,
+  moveIssueToInProgress,
   moveIssueToDone,
   moveIssueToReview,
   PaperclipClientError,
@@ -834,6 +835,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       const stateMachineRes = handleJulesState(state, !!session.currentPrUrl);
+      // Recover from stale blocked status: if Jules is actively working but the
+      // board still shows a previous failure's blocked status, flip back to
+      // in_progress so dashboards reflect reality.
+      if (state === 'IN_PROGRESS' && !session.recoveryInProgress) {
+        session.recoveryInProgress = true;
+        // Best-effort: board update is cosmetic; never block the poll loop.
+        try { await moveIssueToInProgress(taskId, ctx.authToken,
+          `Jules session resumed and is actively working.`, ctx.runId); }
+        catch { /* board unavailable */ }
+      }
       session.phase = stateMachineRes.nextPhase;
 
       if (stateMachineRes.isTerminal) {

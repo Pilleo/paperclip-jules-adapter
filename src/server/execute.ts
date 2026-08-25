@@ -322,13 +322,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? (ctx.context as Record<string, unknown>)
       : {};
   const resumedSessionId: string | undefined = (() => {
-    const sp: unknown = ctx.runtime?.sessionParams;
-    if (typeof sp !== "string" || sp.length <= 2) return undefined;
-    try {
-      return (JSON.parse(sp) as { julesSessionId?: string }).julesSessionId;
-    } catch {
-      return undefined;
+    // sessionParams is Record<string, unknown> | null (adapter-utils types.d.ts).
+    // julesSessionId may sit at top level or nested in a legacy view.
+    const sp = (ctx.runtime?.sessionParams ?? null) as Record<string, unknown> | null;
+    if (!sp) return undefined;
+    const direct = sp["julesSessionId"];
+    if (typeof direct === "string" && direct) return direct;
+    for (const v of Object.values(sp)) {
+      if (v && typeof v === "object") {
+        const nested = (v as Record<string, unknown>)["julesSessionId"];
+        if (typeof nested === "string" && nested) return nested;
+      }
     }
+    return undefined;
   })();
 
   const hasTaskIdentity = "task" in rawCtx || "paperclipIssue" in rawCtx;

@@ -240,6 +240,8 @@ async function listAllActivities(client: JulesClient, sessionId: NonNullable<Jul
   return normalizeActivities(activities);
 }
 
+const MAX_COMMENT_LENGTH = 3500;
+
 async function mirrorNewActivities(
   client: JulesClient,
   session: JulesAdapterSessionV1,
@@ -252,7 +254,13 @@ async function mirrorNewActivities(
   const delivered = new Set(session.deliveredActivityIds ?? []);
   for (const activity of activities) {
     if (!isAfterCheckpoint(activity, session.activityCheckpoint) || delivered.has(activity.id)) continue;
-    const body = activityComment(activity);
+    const rawBody = activityComment(activity);
+    // Paperclip rejects oversized comments (observed 422 on a long verdict) -
+    // truncate with an explicit marker instead of losing the delivery to an error.
+    const body =
+      rawBody && rawBody.length > MAX_COMMENT_LENGTH
+        ? rawBody.slice(0, MAX_COMMENT_LENGTH) + "\n…[truncated]"
+        : rawBody;
     if (body) {
       // Per-activity isolation: one rejected comment (e.g. 422 from board-side
       // validation) must not abort the whole mirror batch and starve every later
@@ -745,7 +753,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           session.currentPrUrl = prUrl;
       }
 
-      const activities = await mirrorNewActivities(client, session, taskId, ctx.authToken, ctx.runId, ctx.onLog);
+      // Mirroring must never prevent terminal detection: a mirror failure used to
+      // abort this run before the COMPLETED/FAILED branches could fire, leaving
+      // the Paperclip issue blocked forever (MAZ-102 incident, issue #4/#5 class).
+      let activities: JulesActivity[] = [];
+      try {
+        activities = await mirrorNewActivities(client, session, taskId, ctx.authToken, ctx.runId, ctx.onLog);
+      } catch (mirrorError) {
+        await ctx.onLog?.(
+          'stderr',
+          `[jules] activity mirroring failed (terminal detection continues): ${String(mirrorError)}\n`,
+        );
+      }
 
       const stateMachineRes = handleJulesState(state, !!session.currentPrUrl);
       session.phase = stateMachineRes.nextPhase;

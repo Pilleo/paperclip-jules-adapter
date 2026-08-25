@@ -660,6 +660,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       session!.phase = 'RUNNING';
       session!.pendingInteraction = undefined;
+      // Board was set to blocked by the failure; flip it back so dashboards
+      // show active work. Best-effort: failure here doesn't affect the retry.
+      try { await moveIssueToInProgress(taskId, ctx.authToken,
+        `Jules session resumed for retry (attempt ${attempt}).`, ctx.runId); }
+      catch { /* board unavailable */ }
       await persistSessionBestEffort(session!, ctx.onLog);
       return createPendingResult(session!, true);
     }
@@ -838,12 +843,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Recover from stale blocked status: if Jules is actively working but the
       // board still shows a previous failure's blocked status, flip back to
       // in_progress so dashboards reflect reality.
-      if (state === 'IN_PROGRESS' && !session.recoveryInProgress) {
-        session.recoveryInProgress = true;
-        // Best-effort: board update is cosmetic; never block the poll loop.
+      // Unconditional: whenever Jules is actively coding, ensure the board
+      // reflects it. Covers blocked→in_progress after retry-resume, and is a
+      // no-op when already in_progress (Paperclip handles idempotent PATCHes).
+      if (state === 'IN_PROGRESS') {
         try { await moveIssueToInProgress(taskId, ctx.authToken,
-          `Jules session resumed and is actively working.`, ctx.runId); }
-        catch { /* board unavailable */ }
+          `Jules session is actively working.`, ctx.runId); }
+        catch { /* board unavailable; session continues regardless */ }
       }
       session.phase = stateMachineRes.nextPhase;
 

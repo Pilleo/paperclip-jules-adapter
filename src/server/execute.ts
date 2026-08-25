@@ -241,6 +241,8 @@ async function listAllActivities(client: JulesClient, sessionId: NonNullable<Jul
 }
 
 const MAX_COMMENT_LENGTH = 3500;
+/** Consecutive resume attempts on the same Jules session before creating a fresh one. */
+const MAX_SESSION_RESUME_ATTEMPTS = 4;
 
 async function mirrorNewActivities(
   client: JulesClient,
@@ -645,25 +647,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const failedSessions = session?.failedSessions || [];
     const attempt = (isRetry && session) ? (session.attempt + 1) : 1;
 
-    // RETRY PREFERENCE: resume the existing Jules session via chat before
-    // creating a new one. Failed/inactive sessions are resumable ("chat to
-    // resume" in the web UI) and resuming preserves all accumulated context.
-    // A fresh session is only created when the resume is explicitly rejected.
-    if (isRetry && session!.julesSessionId) {
-      try {
-        await ctx.onLog?.('stdout', `[jules] Retrying by resuming session ${session!.julesSessionId} (attempt ${attempt})\n`);
-        await client.sendMessage(
-            session!.julesSessionId as Parameters<typeof client.sendMessage>[0],
-            { prompt: "Your previous run hit an error. Please retry the task from where you left off." },
-        );
-        session!.phase = 'RUNNING';
-        session!.pendingInteraction = undefined;
-        await persistSessionBestEffort(session!, ctx.onLog);
-        return createPendingResult(session!, true);
-      } catch (resumeError) {
-        await ctx.onLog?.('stderr', `[jules] Resume rejected for ${session!.julesSessionId}: ${String(resumeError)} - falling back to new session.\n`);
-        // Fall through to new-session creation below.
-      }
+    // RETRY PREFERENCE: resume the existing Jules session via chat for up to
+    // MAX_RESUME_ATTEMPTS consecutive executions. Each resume preserves full
+    // context. Only after exhausting resume attempts do we fall through to
+    // new-session creation below, which naturally starts from the branch tip.
+    if (isRetry && session!.julesSessionId && attempt <= MAX_SESSION_RESUME_ATTEMPTS) {
+      await ctx.onLog?.('stdout', `[jules] Retrying by resuming session ${session!.julesSessionId} (attempt ${attempt}/${MAX_SESSION_RESUME_ATTEMPTS})\n`);
+      await client.sendMessage(
+          session!.julesSessionId as Parameters<typeof client.sendMessage>[0],
+          { prompt: "Your previous run hit an error. Please retry the task from where you left off." },
+      );
+      session!.phase = 'RUNNING';
+      session!.pendingInteraction = undefined;
+      await persistSessionBestEffort(session!, ctx.onLog);
+      return createPendingResult(session!, true);
+    }
+    // Attempts exhausted or no session to resume: fall through to fresh creation.
+    if (isRetry) {
+      await ctx.onLog?.('stderr', `[jules] Session resume budget exhausted (${MAX_SESSION_RESUME_ATTEMPTS} attempts) - creating fresh session as continuation.\n`);
     }
 
     let failedSessionId, failedSessionMessage;
@@ -681,6 +682,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       title: taskTitle,
       description: taskDescription,
       isRetry,
+      resumeAttempt: isRetry ? attempt : 0,
       failedSessionUrl: failedSessionId ? `Session ID: ${failedSessionId}` : undefined,
       failedSessionMessage
     };

@@ -7,6 +7,8 @@ export interface PromptContext {
   title: string;
   description: string;
   isRetry: boolean;
+  /** How many times this task has been retried (1 = first retry, 0 = fresh). */
+  resumeAttempt?: number | undefined;
   failedSessionReference?: string | undefined;
   failedSessionMessage?: string | undefined;
 }
@@ -31,10 +33,17 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
   prompt += `- If you are blocked or need clarification, ask a focused question.\n\n`;
 
   if (ctx.isRetry) {
-    prompt += `A previous Jules session failed unexpectedly.\n`;
-    prompt += `Previous session: ${ctx.failedSessionReference || 'Unknown'}\n`;
-    prompt += `Failure: ${ctx.failedSessionMessage || 'Unknown error'}\n\n`;
-    prompt += `Start cleanly from the current base branch. Do not assume the previous session's workspace exists. Preserve the original task and acceptance criteria.\n`;
+    if (ctx.resumeAttempt && ctx.resumeAttempt > 1) {
+      // Continuation: prior sessions may have pushed partial work to the branch.
+      prompt += `This is a CONTINUATION of a multi-session task. Previous session(s) attempted this task and may have pushed partial work.\n`;
+      prompt += `Start from the current base branch tip (it includes any prior progress). Review what exists before writing code.\n`;
+      prompt += `Do not redo completed work - verify it, then continue from where the last session stopped.\n\n`;
+    } else {
+      prompt += `A previous Jules session failed unexpectedly.\n`;
+      prompt += `Previous session: ${ctx.failedSessionReference || 'Unknown'}\n`;
+      prompt += `Failure: ${ctx.failedSessionMessage || 'Unknown error'}\n\n`;
+      prompt += `Start cleanly from the current base branch. Do not assume the previous session's workspace exists. Preserve the original task and acceptance criteria.\n`;
+    }
   }
 
   return prompt;

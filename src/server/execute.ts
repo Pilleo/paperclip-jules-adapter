@@ -684,7 +684,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       isRetry,
       resumeAttempt: isRetry ? attempt : 0,
       failedSessionUrl: failedSessionId ? `Session ID: ${failedSessionId}` : undefined,
-      failedSessionMessage
+      failedSessionMessage,
+      priorPrUrls: (session?.failedSessions ?? [])
+          .map((fs) => fs.prUrl)
+          .filter((url): url is string => Boolean(url)),
     };
 
     const prompt = buildPrompt(promptContext, config);
@@ -750,7 +753,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             attempt,
             failedSessions: [
               ...failedSessions,
-              { failedAt: new Date().toISOString(), message: sanitizeError(error), classification }
+              { failedAt: new Date().toISOString(), message: sanitizeError(error), classification,
+                ...(session?.currentPrUrl ? { prUrl: session.currentPrUrl } : {}) },
             ],
             createdAt: new Date().toISOString()
           }),
@@ -918,7 +922,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                      sessionId: session.julesSessionId,
                      failedAt: new Date().toISOString(),
                      message: sanitizeError(summarizeJulesFailure(failureDetails)),
-                     classification
+                     classification,
+                     ...(session.currentPrUrl ? { prUrl: session.currentPrUrl } : {})
                  });
                  session.phase = 'RETRY_SCHEDULED';
                  return {

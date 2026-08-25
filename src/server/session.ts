@@ -20,7 +20,9 @@ export const FailedSessionSchema = z.object({
   sessionId: z.string().optional(),
   failedAt: z.string(),
   message: z.string(),
-  classification: z.enum(["transient", "configuration", "task", "unknown"])
+  classification: z.enum(["transient", "configuration", "task", "unknown"]),
+  /** PR URL if the failed session had created one before failing. */
+  prUrl: z.string().optional()
 });
 
 export const PendingInteractionSchema = z.discriminatedUnion("type", [
@@ -124,6 +126,7 @@ export interface JulesAdapterSessionV1 {
     failedAt: string;
     message: string;
     classification: "transient" | "configuration" | "task" | "unknown";
+    prUrl?: string | undefined;
   }>;
   currentPrUrl?: PrUrl | undefined;
   /** Monotonic key suffix used when a feedback card must be re-opened. */

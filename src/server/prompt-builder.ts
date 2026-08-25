@@ -11,6 +11,8 @@ export interface PromptContext {
   resumeAttempt?: number | undefined;
   failedSessionReference?: string | undefined;
   failedSessionMessage?: string | undefined;
+  /** PR URLs from prior sessions that may have partial work. */
+  priorPrUrls?: string[] | undefined;
 }
 
 export const PROMPT_IDENTITY_HASH_VERSION = 2;
@@ -34,9 +36,16 @@ export function buildPrompt(ctx: PromptContext, config: AdapterConfig): string {
 
   if (ctx.isRetry) {
     if (ctx.resumeAttempt && ctx.resumeAttempt > 1) {
-      // Continuation: prior sessions may have pushed partial work to the branch.
-      prompt += `This is a CONTINUATION of a multi-session task. Previous session(s) attempted this task and may have pushed partial work.\n`;
-      prompt += `Start from the current base branch tip (it includes any prior progress). Review what exists before writing code.\n`;
+      // Continuation: prior sessions may have pushed partial work or left branches.
+      prompt += `This is a CONTINUATION of a multi-session task.\n`;
+      prompt += `IMPORTANT: your pull request MUST target base branch "${config.baseBranch}".\n`;
+      prompt += `Do NOT create a PR against any other branch, even if one exists from a previous session.\n`;
+      if (ctx.priorPrUrls?.length) {
+        prompt += `Prior attempts produced these PRs (review them for context, do not build on their branches):\n`;
+        for (const url of ctx.priorPrUrls) prompt += `  - ${url}\n`;
+        prompt += `\n`;
+      }
+      prompt += `Start from the tip of "${config.baseBranch}". Review what exists before writing code.\n`;
       prompt += `Do not redo completed work - verify it, then continue from where the last session stopped.\n\n`;
     } else {
       prompt += `A previous Jules session failed unexpectedly.\n`;

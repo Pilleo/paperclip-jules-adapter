@@ -8,7 +8,8 @@ describe('Config', () => {
   });
 
   it('requireJulesApiKey throws if the Paperclip binding is missing', () => {
-     expect(() => requireJulesApiKey({})).toThrow('Create the shared secret as jules-api-key');
+     expect(() => requireJulesApiKey({})).toThrow('JULES_API_KEY did not resolve');
+  expect(() => requireJulesApiKey({})).toThrow('secret_ref');
   });
 
   it('requireJulesApiKey reads the resolved Paperclip binding', () => {
@@ -19,7 +20,7 @@ describe('Config', () => {
   it('requireJulesApiKey ignores the server process environment', () => {
       const prior = process.env['JULES_API_KEY'];
       process.env['JULES_API_KEY'] = 'server-only-key';
-      expect(() => requireJulesApiKey({ env: {} })).toThrow('bind it to the Jules agent at env.JULES_API_KEY');
+      expect(() => requireJulesApiKey({ env: {} })).toThrow('JULES_API_KEY did not resolve');
       if (prior === undefined) delete process.env['JULES_API_KEY'];
       else process.env['JULES_API_KEY'] = prior;
   });

@@ -14,11 +14,29 @@ describe("Paperclip issue completion", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("moves the assigned issue to review with the local agent token", async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const fetchMock = vi.fn()
+      // GET work-products (dedupe guard): empty list -> POST proceeds
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => [] })
+      .mockResolvedValue({ ok: true, status: 200 });
+    global.fetch = fetchMock as unknown as typeof global.fetch;
 
     await moveIssueToReview("issue-1", "https://github.com/example/repo/pull/1", "jwt-token");
 
-    expect(global.fetch).toHaveBeenCalledWith(
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:3100/api/issues/issue-1/work-products",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:3100/api/issues/issue-1/work-products",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"type":"pull_request"'),
+      }),
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
       "http://127.0.0.1:3100/api/issues/issue-1",
       expect.objectContaining({
         method: "PATCH",
@@ -73,6 +91,11 @@ describe("Paperclip issue completion", () => {
   it("creates stable feedback and plan approval interactions", async () => {
     global.fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: "feedback-1", status: "pending" }) })
+      .mockResolvedValueOnce({ ok: false, status: 404, text: async () => "missing" })
+      .mockResolvedValueOnce({
+        ok: true, status: 200,
+        json: async () => ({ id: "doc-1", latestRevisionId: "revision-1", latestRevisionNumber: 1 }),
+      })
       .mockResolvedValueOnce({ ok: true, status: 201, json: async () => ({ id: "plan-1", status: "pending" }) });
 
     await createJulesFeedbackInteraction("issue-1", "session-1", "activity-1", "Which branch?", "jwt-token");
@@ -83,9 +106,15 @@ describe("Paperclip issue completion", () => {
       expect.objectContaining({ body: expect.stringContaining('"idempotencyKey":"jules:user-feedback:issue-1:session-1:activity-1:1"') }),
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      2, expect.any(String),
-      expect.objectContaining({ body: expect.stringContaining('"idempotencyKey":"jules:plan-approval:issue-1:session-1:activity-2"') }),
+      3, "http://127.0.0.1:3100/api/issues/issue-1/documents/plan",
+      expect.objectContaining({ method: "PUT", body: expect.stringContaining('"baseRevisionId":null') }),
     );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4, expect.any(String),
+      expect.objectContaining({ body: expect.stringContaining('"idempotencyKey":"confirmation:issue-1:plan:revision-1"') }),
+    );
+    expect(JSON.parse(vi.mocked(global.fetch).mock.calls[3]![1]!.body as string).payload.target)
+      .toMatchObject({ type: "issue_document", documentId: "doc-1", key: "plan", revisionId: "revision-1" });
   });
 
   it("supports explicit blocked and done dispositions", async () => {

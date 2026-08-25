@@ -1,7 +1,7 @@
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { AdapterConfig, validateConfig, requireJulesApiKey } from "./config.js";
 import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
-import { JulesActivity, JulesClient, extractPullRequestUrl } from "./jules-client.js";
+import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
 import { handleJulesState } from "./state-machine.js";
 import { classifyFailure, toErrorFamily, summarizeJulesFailure } from "./failure-classifier.js";
@@ -10,6 +10,11 @@ import { asJulesActivityId, asJulesSessionId, asPaperclipId } from "./brands.js"
 import { CtxContextSchema, HostContextSchema } from "./context-schemas.js";
 import { sanitizeError } from "./error-sanitizer.js";
 import { deleteStoredSession, loadStoredSession, saveStoredSession } from "./session-store.js";
+import {
+  isAfterCheckpoint,
+  laterCheckpoint,
+  normalizeActivities,
+} from "./activity-checkpoint.js";
 import {
   createNoPrCompletionInteraction,
   addJulesActivityComment,
@@ -22,6 +27,7 @@ import {
   PaperclipClientError,
   type PaperclipInteraction,
 } from "./paperclip-client.js";
+import { createTelemetry } from "./telemetry.js";
 
 const JULES_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const JULES_WATCH_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -133,11 +139,6 @@ async function persistSessionBestEffort(
   }
 }
 
-function sortedActivities(activities: JulesActivity[]): JulesActivity[] {
-  return [...activities].sort((left, right) =>
-    (left.createTime ?? "").localeCompare(right.createTime ?? "") || left.id.localeCompare(right.id));
-}
-
 function activityComment(activity: JulesActivity): string | null {
   if (activity.planGenerated) {
     const steps = [...activity.planGenerated.plan.steps]
@@ -151,7 +152,37 @@ function activityComment(activity: JulesActivity): string | null {
     const description = activity.progressUpdated.description?.trim();
     return `**Jules progress: ${activity.progressUpdated.title}**${description ? `\n\n${description}` : ""}`;
   }
-  return null;
+  if (activity.agentMessaged) return `**Jules message**\n\n${activity.agentMessaged.agentMessage}`;
+  if (activity.userMessaged) return `**Message sent to Jules**\n\n${activity.userMessaged.userMessage}`;
+  if (activity.planApproved) return `**Jules plan approved**\n\nPlan ID: \`${activity.planApproved.planId}\``;
+  if (activity.sessionCompleted) return "**Jules session completed**";
+  if (activity.sessionFailed) return `**Jules session failed**\n\n${activity.sessionFailed.reason}`;
+
+  // Jules adds activity variants over time. Preserve the material work-product
+  // variants even when a newer API field is not yet modelled above; this keeps
+  // bash output, changesets, artifacts, and media references durable in the
+  // Paperclip timeline rather than silently advancing the activity checkpoint.
+  const raw = activity as Record<string, unknown>;
+  const evidence = [
+    ["bashCodeExecution", "Jules bash execution"],
+    ["changeSet", "Jules changeset"],
+    ["artifact", "Jules artifact"],
+    ["artifactCreated", "Jules artifact"],
+    ["media", "Jules media"],
+    ["mediaGenerated", "Jules media"],
+  ] as const;
+  for (const [key, label] of evidence) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    let detail: string;
+    try {
+      detail = JSON.stringify(value, null, 2);
+    } catch {
+      detail = String(value);
+    }
+    return `**${label}**\n\n\`\`\`json\n${detail.slice(0, 12_000)}\n\`\`\``;
+  }
+  return activity.description ? `**Jules activity**\n\n${activity.description}` : null;
 }
 
 function latestAgentMessage(activities: JulesActivity[]): JulesActivity | null {
@@ -180,6 +211,24 @@ function feedbackAnswer(result: unknown): string | null {
   return null;
 }
 
+function rejectionReason(result: unknown): string | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return null;
+  const record = result as Record<string, unknown>;
+  for (const key of ["reason", "rejectReason", "rejectionReason", "feedback"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return feedbackAnswer(result);
+}
+
+function interactionPlanRevisionId(interaction: PaperclipInteraction | null): string | null {
+  if (!interaction || typeof interaction.target !== "object" || interaction.target === null) return null;
+  const target = interaction.target as Record<string, unknown>;
+  return target["type"] === "issue_document" && target["key"] === "plan" && typeof target["revisionId"] === "string"
+    ? target["revisionId"]
+    : null;
+}
+
 async function listAllActivities(client: JulesClient, sessionId: NonNullable<JulesAdapterSessionV1["julesSessionId"]>): Promise<JulesActivity[]> {
   const activities: JulesActivity[] = [];
   let pageToken: string | undefined;
@@ -188,7 +237,7 @@ async function listAllActivities(client: JulesClient, sessionId: NonNullable<Jul
     activities.push(...(page.activities ?? []));
     pageToken = page.nextPageToken;
   } while (pageToken);
-  return sortedActivities(activities);
+  return normalizeActivities(activities);
 }
 
 async function mirrorNewActivities(
@@ -202,11 +251,26 @@ async function mirrorNewActivities(
   const activities = await listAllActivities(client, session.julesSessionId!);
   const delivered = new Set(session.deliveredActivityIds ?? []);
   for (const activity of activities) {
+    if (!isAfterCheckpoint(activity, session.activityCheckpoint) || delivered.has(activity.id)) continue;
     const body = activityComment(activity);
-    if (!body || delivered.has(activity.id)) continue;
-    await addJulesActivityComment(taskId, activity.id, body, session.julesSessionUrl, authToken, runId);
+    if (body) {
+      // Per-activity isolation: one rejected comment (e.g. 422 from board-side
+      // validation) must not abort the whole mirror batch and starve every later
+      // activity behind the durable cursor. Failure is logged with the activity id
+      // and the cursor still advances - the activity is lost from the board but the
+      // session never wedges. (Issue #7)
+      try {
+        await addJulesActivityComment(taskId, activity.id, body, session.julesSessionUrl, authToken, runId);
+      } catch (commentError) {
+        await onLog?.(
+          "stderr",
+          `[jules-mirror] failed to deliver activity ${activity.id}: ${String(commentError)}\n`,
+        );
+      }
+    }
     delivered.add(activity.id);
     session.deliveredActivityIds = [...delivered].slice(-200);
+    session.activityCheckpoint = laterCheckpoint(session.activityCheckpoint, activity);
     await persistSessionBestEffort(session, onLog);
   }
   return activities;
@@ -239,12 +303,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!ctx.agent || typeof ctx.agent.adapterConfig === 'undefined') {
       throw new Error("Missing adapter config");
   }
-  const config = validateConfig(ctx.agent.adapterConfig);
   const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
+  const rawContext = parsedCtxContext as Record<string, unknown>;
+  const rawWorkspace = readContextRecord(parsedCtxContext, "workspace");
+  const issueOverride = rawContext["julesSettings"] ?? rawContext["adapterSettings"];
+  const workspaceRepositoryUrl = readContextString(rawWorkspace, "repositoryUrl") ?? readContextString(rawWorkspace, "repoUrl");
+  const workspaceDefaultBranch = readContextString(rawWorkspace, "defaultBranch") ?? readContextString(rawWorkspace, "defaultRef");
+  const warnings: string[] = [];
+  const config = validateConfig(ctx.agent.adapterConfig, {
+    issueOverride,
+    workspace: {
+      ...(workspaceRepositoryUrl ? { repositoryUrl: workspaceRepositoryUrl } : {}),
+      ...(workspaceDefaultBranch ? { defaultBranch: workspaceDefaultBranch } : {}),
+      ...(rawWorkspace["hasRemote"] === false ? { hasRemote: false } : {}),
+    },
+    warn: message => warnings.push(message),
+  });
+  for (const warning of warnings) await ctx.onLog?.("stderr", `[jules settings] ${warning}\n`);
   const parsedHostCtx = HostContextSchema.parse(ctx);
-
-  const apiKey = requireJulesApiKey(ctx.config);
-  const client = new JulesClient(apiKey);
 
   let session = sessionCodec.decode(ctx.runtime.sessionParams);
   const canonicalSessionId = sessionCodec.getCanonicalSessionId(ctx.runtime.sessionParams);
@@ -254,6 +330,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const rawTaskId = parsedCtxContext.task.id;
   const taskId = asPaperclipId(rawTaskId);
+  const telemetry = createTelemetry(taskId, async (record) => {
+    if (ctx.onLog) await ctx.onLog("stdout", `${JSON.stringify(record)}\n`);
+  });
+  const apiKey = requireJulesApiKey(ctx.config);
+  const client = new JulesClient(apiKey, telemetry);
   const taskTitle = parsedCtxContext.task.title;
   const taskDescription = parsedCtxContext.task.description;
 
@@ -313,11 +394,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (!pendingCompletion && !pendingProviderInteraction && isCompletionResolution) {
     return {
-      exitCode: 1,
+      exitCode: 0,
       signal: null,
       timedOut: false,
-      errorCode: "paperclip_completion_interaction_missing_state",
-      errorMessage: "Resolved Paperclip completion interaction has no matching persisted Jules state",
+      summary: "Ignored an already-resolved or stale Paperclip interaction wake with no pending Jules state.",
       sessionParams: session ? serializeSession(session) : null,
       sessionDisplayId: session?.julesSessionId ?? null,
       clearSession: false,
@@ -327,11 +407,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (pendingCompletion && isCompletionResolution) {
     if (interactionId !== pendingCompletion.paperclipInteractionId) {
       return {
-        exitCode: 1,
+        exitCode: 0,
         signal: null,
         timedOut: false,
-        errorCode: "paperclip_completion_interaction_mismatch",
-        errorMessage: "Resolved Paperclip interaction does not match the pending Jules completion confirmation",
+        summary: "Ignored a stale Paperclip completion interaction wake.",
         sessionParams: serializeSession(session!),
         sessionDisplayId: session!.julesSessionId ?? null,
         clearSession: false,
@@ -386,14 +465,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (providerInteractionKind === "request_confirmation" &&
       (providerInteractionStatus === "accepted" || providerInteractionStatus === "rejected"));
 
+  if (pendingProviderInteraction && storedPendingInteraction?.status === "superseded") {
+    session!.pendingInteraction = undefined;
+    await persistSessionBestEffort(session!, ctx.onLog);
+  }
+
   if (pendingProviderInteraction && isProviderResolution) {
     if (providerInteractionId !== pendingProviderInteraction.paperclipInteractionId) {
       return {
-        exitCode: 1,
+        exitCode: 0,
         signal: null,
         timedOut: false,
-        errorCode: "paperclip_provider_interaction_mismatch",
-        errorMessage: "Resolved Paperclip interaction does not match the pending Jules interaction",
+        summary: "Ignored a stale Paperclip provider interaction wake.",
         sessionParams: serializeSession(session!),
         sessionDisplayId: session!.julesSessionId ?? null,
         clearSession: false,
@@ -446,7 +529,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         await client.sendMessage(session!.julesSessionId!, { prompt: answer });
       } else {
+        const resolvedRevisionId = interactionPlanRevisionId(storedPendingInteraction);
+        if (!pendingProviderInteraction.planRevisionId || resolvedRevisionId !== pendingProviderInteraction.planRevisionId) {
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorCode: "paperclip_plan_revision_mismatch",
+            errorMessage: "Resolved Paperclip confirmation does not target the pending Jules plan revision",
+            sessionParams: serializeSession(session!),
+            sessionDisplayId: session!.julesSessionId ?? null,
+            clearSession: false,
+          };
+        }
         if (providerInteractionStatus === "rejected") {
+          const reason = storedPendingInteraction ? rejectionReason(storedPendingInteraction.result) : null;
+          // A rejection is actionable provider feedback, not a terminal dead
+          // end. Jules uses sendMessage to regenerate the plan; retain the
+          // issue's blocked disposition until it publishes the replacement.
+          await client.sendMessage(
+            session!.julesSessionId!,
+            { prompt: `The Paperclip plan review rejected the current plan.${reason ? ` Feedback: ${reason}` : " Please regenerate the plan with the requested changes."}` },
+          );
+          session!.pendingInteraction = undefined;
+          session!.phase = "RUNNING";
+          await persistSessionBestEffort(session!, ctx.onLog);
           await moveIssueToBlocked(taskId, ctx.authToken, ctx.runId);
           return {
             exitCode: 0,
@@ -454,7 +561,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             timedOut: false,
             sessionParams: serializeSession(session!),
             sessionDisplayId: session!.julesSessionId ?? null,
-            summary: "Jules plan was not approved; the Paperclip issue remains blocked for manual follow-up in Jules.",
+            summary: "Jules received the plan rejection feedback and will regenerate its plan asynchronously.",
             resultJson: { provider: "jules", issueStatus: "blocked" },
             clearSession: false,
           };
@@ -557,7 +664,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorCode: "jules_transient_failure",
           errorFamily: toErrorFamily(classification),
           errorMessage: sanitizeError(error),
-          retryNotBefore: new Date(getRetryNotBefore(attempt)).toISOString(),
+          retryNotBefore: new Date(getRetryNotBefore(attempt, {
+            retryAfterMs: error instanceof JulesClientError ? error.retryAfterMs : null,
+          })).toISOString(),
           sessionParams: serializeSession({
             version: 1,
             paperclipIssueId: taskId,
@@ -811,6 +920,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   julesActivityId: asJulesActivityId(activityId),
                   paperclipInteractionId: interaction.id,
                   question: plan,
+                  planDocumentId: interaction.planRevision.documentId,
+                  planRevisionId: interaction.planRevision.revisionId,
+                  planRevisionNumber: interaction.planRevision.revisionNumber,
                   createdAt: new Date().toISOString(),
                 };
                 session.pendingInteraction = pending;

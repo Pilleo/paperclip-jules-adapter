@@ -25,10 +25,20 @@ export const FailedSessionSchema = z.object({
 
 export const PendingInteractionSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.enum(["user_feedback", "plan_approval"]),
+    type: z.literal("user_feedback"),
     julesActivityId: z.string(),
     paperclipInteractionId: z.string().optional(),
     question: z.string(),
+    createdAt: z.string()
+  }),
+  z.object({
+    type: z.literal("plan_approval"),
+    julesActivityId: z.string(),
+    paperclipInteractionId: z.string().optional(),
+    question: z.string(),
+    planDocumentId: z.string().min(1),
+    planRevisionId: z.string().min(1),
+    planRevisionNumber: z.number().int().positive(),
     createdAt: z.string()
   }),
   z.object({
@@ -60,6 +70,10 @@ export const JulesAdapterSessionV1Schema = z.object({
   pendingInteraction: PendingInteractionSchema.optional(),
   feedbackInteractionAttempt: z.number().int().min(0).optional(),
   deliveredActivityIds: z.array(z.string().min(1)).max(200).optional(),
+  activityCheckpoint: z.object({
+    createTime: z.string().datetime(),
+    id: z.string().min(1),
+  }).optional(),
   lastActivityId: z.string().optional(),
   createdAt: z.string(),
   lastPolledAt: z.string().optional()
@@ -114,10 +128,20 @@ export interface JulesAdapterSessionV1 {
   feedbackInteractionAttempt?: number | undefined;
   pendingInteraction?:
     | {
-        type: "user_feedback" | "plan_approval";
+        type: "user_feedback";
         julesActivityId: JulesActivityId;
         paperclipInteractionId?: string | undefined;
         question: string;
+        createdAt: string;
+      }
+    | {
+        type: "plan_approval";
+        julesActivityId: JulesActivityId;
+        paperclipInteractionId?: string | undefined;
+        question: string;
+        planDocumentId: string;
+        planRevisionId: string;
+        planRevisionNumber: number;
         createdAt: string;
       }
     | {
@@ -129,6 +153,8 @@ export interface JulesAdapterSessionV1 {
     | undefined;
   /** Recent Jules activities already mirrored to the Paperclip issue thread. */
   deliveredActivityIds?: string[] | undefined;
+  /** High-water mark for the normalized Jules activity stream. */
+  activityCheckpoint?: { createTime: string; id: string } | undefined;
   lastActivityId?: string | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;

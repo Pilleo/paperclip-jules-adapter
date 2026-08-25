@@ -29,6 +29,16 @@ Paperclip resolves the binding into the adapter runtime for each run. The key mu
 
 The adapter deliberately does not fall back to `process.env.JULES_API_KEY`; a missing binding produces a diagnostic explaining how to create it.
 
+### Heartbeat requirement
+
+After a plan-approval interaction is accepted, the adapter relays `approvePlan` and
+the session enters its long RUNNING phase. Polling during that phase depends on
+Paperclip waking the agent: either enable `runtimeConfig.heartbeat`
+(e.g. `intervalSec: 300`) on the Jules agent, or ensure another mechanism sends
+`POST /api/agents/:id/heartbeat/invoke`. With heartbeat **disabled** and no external
+wake, completed sessions are never observed — the issue silently stays blocked
+(observed live 2026-08-25, issue #9).
+
 ### Paperclip UI Registry Integration
 
 This adapter acts as an **External Adapter** using Paperclip's dynamic external configuration capabilities.

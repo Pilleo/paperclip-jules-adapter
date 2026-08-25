@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { JulesSessionName, JulesSessionId, JulesActivityId, PrUrl, parseJulesSessionName, toJulesSessionId, asPrUrl } from './brands.js';
+import { parseRetryAfter } from './retry-policy.js';
 
 export const JulesCreateSessionRequestSchema = z.object({
   title: z.string().optional(),
@@ -21,7 +22,7 @@ export interface SendMessageRequest {
 }
 
 export class JulesClientError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public readonly retryAfterMs: number | null = null) {
     super(message);
     this.name = 'JulesClientError';
   }
@@ -159,13 +160,18 @@ export function toJulesFailure(errorInfo: unknown): JulesFailure {
 export class JulesClient {
   private baseUrl = 'https://jules.googleapis.com/v1alpha';
 
-  constructor(private apiKey: string) {
+  constructor(
+    private apiKey: string,
+    private telemetry?: (event: "api_request", sessionId: string | null, fields: Record<string, unknown>) => void | Promise<void>,
+  ) {
     if (!apiKey) {
       throw new Error("Jules API key is required");
     }
   }
 
   private async fetchApi(path: string, options: RequestInit = {}) {
+    const startedAt = Date.now();
+    const sessionId = path.match(/^\/sessions\/([^/:?]+)/)?.[1] ?? null;
     const url = `${this.baseUrl}${path}`;
     const headers = {
       'Content-Type': 'application/json',
@@ -173,10 +179,24 @@ export class JulesClient {
       ...options.headers,
     };
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-      signal: options.signal ?? AbortSignal.timeout(JULES_API_REQUEST_TIMEOUT_MS),
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+        signal: options.signal ?? AbortSignal.timeout(JULES_API_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      await this.telemetry?.("api_request", sessionId, {
+        method: options.method ?? "GET", route: path.split("?")[0], latencyMs: Date.now() - startedAt,
+        errorClass: error instanceof DOMException && error.name === "TimeoutError" ? "timeout" : "network",
+      });
+      throw error;
+    }
+
+    await this.telemetry?.("api_request", sessionId, {
+      method: options.method ?? "GET", route: path.split("?")[0], latencyMs: Date.now() - startedAt,
+      status: response.status, errorClass: response.ok ? null : response.status === 429 ? "rate_limit" : response.status >= 500 ? "upstream" : "terminal",
     });
 
     if (!response.ok) {
@@ -186,7 +206,14 @@ export class JulesClient {
       } catch (err) {
         // parsing failed
       }
-      throw new JulesClientError(response.status, `Jules API error (${response.status}): ${typeof errorText === 'string' ? errorText : 'Unknown error'}`);
+      const retryAfter = typeof response.headers?.get === "function"
+        ? parseRetryAfter(response.headers.get("retry-after"))
+        : null;
+      throw new JulesClientError(
+        response.status,
+        `Jules API error (${response.status}): ${typeof errorText === 'string' ? errorText : 'Unknown error'}`,
+        retryAfter,
+      );
     }
 
     if (response.status === 204) {

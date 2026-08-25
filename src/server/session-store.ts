@@ -6,7 +6,7 @@ import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session
 
 const SESSION_STORE_DIR_ENV = "PAPERCLIP_JULES_SESSION_STORE_DIR";
 
-function sessionStoreDirectory(): string | null {
+export function sessionStoreDirectory(): string | null {
   const configuredDirectory = process.env[SESSION_STORE_DIR_ENV];
   if (configuredDirectory) return configuredDirectory;
 

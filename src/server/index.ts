@@ -14,6 +14,8 @@ export {
   testEnvironment,
   AdapterConfigSchema as configSchema
 };
+export { checkJulesCredentials, checkLocalState } from "./health.js";
+export { createTelemetry, redactTelemetry } from "./telemetry.js";
 
 export function createServerAdapter(): ServerAdapterModule {
     return {
@@ -28,15 +30,9 @@ export function createServerAdapter(): ServerAdapterModule {
 
 Runs long-lived Google Jules sessions against a configured GitHub repository.
 
-Required configuration:
-
-- source: Jules source resource, for example sources/github/Pilleo/mazewall
-- repository: GitHub owner/repository, for example Pilleo/mazewall
-- baseBranch: branch Jules starts from
-Timing is intentionally fixed: the adapter checkpoints a new Jules session
-immediately, polls every five minutes, and watches resumed work for up to six
-hours per Paperclip run. Active work is continued through Paperclip's durable
-retry path instead of being reported as successfully completed.
+Repository and base branch are derived from the Paperclip workspace when possible.
+Otherwise configure repository (owner/repo) and baseBranch. See docs/settings.md
+for typed policies, bounds, precedence, examples, and legacy migration behavior.
 `,
         getConfigSchema: () => julesConfigSchema,
     };

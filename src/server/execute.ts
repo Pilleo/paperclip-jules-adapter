@@ -620,7 +620,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             clearSession: false,
           };
         }
-        await client.approvePlan(session!.julesSessionId!);
+        // Idempotent resume: if the relay already succeeded in a previous run
+        // (planApprovedAt set), do NOT call approvePlan again - Jules rejects
+        // double-approval and the run would fail-loop (MAZ-37 incident).
+        if (!session!.planApprovedAt) {
+          await client.approvePlan(session!.julesSessionId!);
+          session!.planApprovedAt = new Date().toISOString();
+        }
       }
       session!.pendingInteraction = undefined;
       session!.phase = "RUNNING";
@@ -638,6 +644,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const isRetry = session?.phase === 'RETRY_SCHEDULED';
     const failedSessions = session?.failedSessions || [];
     const attempt = (isRetry && session) ? (session.attempt + 1) : 1;
+
+    // RETRY PREFERENCE: resume the existing Jules session via chat before
+    // creating a new one. Failed/inactive sessions are resumable ("chat to
+    // resume" in the web UI) and resuming preserves all accumulated context.
+    // A fresh session is only created when the resume is explicitly rejected.
+    if (isRetry && session!.julesSessionId) {
+      try {
+        await ctx.onLog?.('stdout', `[jules] Retrying by resuming session ${session!.julesSessionId} (attempt ${attempt})\n`);
+        await client.sendMessage(
+            session!.julesSessionId as Parameters<typeof client.sendMessage>[0],
+            { prompt: "Your previous run hit an error. Please retry the task from where you left off." },
+        );
+        session!.phase = 'RUNNING';
+        session!.pendingInteraction = undefined;
+        await persistSessionBestEffort(session!, ctx.onLog);
+        return createPendingResult(session!, true);
+      } catch (resumeError) {
+        await ctx.onLog?.('stderr', `[jules] Resume rejected for ${session!.julesSessionId}: ${String(resumeError)} - falling back to new session.\n`);
+        // Fall through to new-session creation below.
+      }
+    }
 
     let failedSessionId, failedSessionMessage;
     if (isRetry && failedSessions.length > 0) {

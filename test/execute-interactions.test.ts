@@ -90,7 +90,10 @@ describe("Jules activity interactions", () => {
 
     const result = await execute(baseContext);
 
-    expect(addJulesActivityComment).not.toHaveBeenCalled();
+    expect(addJulesActivityComment).toHaveBeenCalledWith(
+      "issue-1", "activity-question", expect.stringContaining("Jules message"),
+      "https://jules.example/session-1", "jwt-token", "run-1",
+    );
     expect(createJulesFeedbackInteraction).toHaveBeenCalledWith(
       "issue-1", "session-1", "activity-question", "Which branch should I use?", "jwt-token", 1, "run-1",
     );
@@ -183,6 +186,10 @@ describe("Jules activity interactions", () => {
   });
 
   it("approves a Jules plan only after Paperclip accepts it", async () => {
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "plan-1", kind: "request_confirmation", status: "accepted",
+      target: { type: "issue_document", key: "plan", revisionId: "revision-1" },
+    });
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({ state: "AWAITING_PLAN_APPROVAL" } as never);
     vi.mocked(JulesClient.prototype.getActivities).mockResolvedValue({ activities: [] } as never);
     vi.mocked(createJulesPlanApprovalInteraction).mockResolvedValue({ id: "plan-2", status: "pending" });
@@ -199,6 +206,9 @@ describe("Jules activity interactions", () => {
             julesActivityId: "activity-plan",
             paperclipInteractionId: "plan-1",
             question: "**Jules plan**",
+            planDocumentId: "doc-1",
+            planRevisionId: "revision-1",
+            planRevisionNumber: 1,
             createdAt: "2026-08-08T00:00:00.000Z",
           },
         }),
@@ -212,5 +222,49 @@ describe("Jules activity interactions", () => {
     } as AdapterExecutionContext);
 
     expect(JulesClient.prototype.approvePlan).toHaveBeenCalledWith("session-1");
+  });
+
+  it("sends a plan rejection reason to Jules so it can regenerate the plan", async () => {
+    vi.mocked(getPaperclipInteraction).mockResolvedValue({
+      id: "plan-1",
+      kind: "request_confirmation",
+      status: "rejected",
+      result: { rejectReason: "Include rollback steps." },
+      target: { type: "issue_document", key: "plan", revisionId: "revision-1" },
+    });
+
+    const result = await execute({
+      ...baseContext,
+      runtime: {
+        ...baseContext.runtime,
+        sessionParams: sessionCodec.encode({
+          ...session,
+          phase: "WAITING_FOR_PLAN_APPROVAL",
+          pendingInteraction: {
+            type: "plan_approval",
+            julesActivityId: "activity-plan",
+            paperclipInteractionId: "plan-1",
+            question: "**Jules plan**",
+            planDocumentId: "doc-1",
+            planRevisionId: "revision-1",
+            planRevisionNumber: 1,
+            createdAt: "2026-08-08T00:00:00.000Z",
+          },
+        }),
+      },
+      context: {
+        ...baseContext.context,
+        interactionId: "plan-1",
+        interactionKind: "request_confirmation",
+        interactionStatus: "rejected",
+      },
+    } as AdapterExecutionContext);
+
+    expect(JulesClient.prototype.sendMessage).toHaveBeenCalledWith(
+      "session-1",
+      { prompt: expect.stringContaining("Include rollback steps.") },
+    );
+    expect(sessionCodec.decode(result.sessionParams!)?.pendingInteraction).toBeUndefined();
+    expect(result.summary).toContain("regenerate");
   });
 });

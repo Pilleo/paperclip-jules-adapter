@@ -198,7 +198,8 @@ describe("Jules completion without a PR", () => {
         interactionStatus: "accepted",
       },
     });
-    expect(missing.errorCode).toBe("paperclip_completion_interaction_missing_state");
+    expect(missing.exitCode).toBe(0);
+    expect(missing.summary).toContain("stale");
 
     const sessionParams = sessionCodec.encode({
       ...baseSession,
@@ -220,7 +221,8 @@ describe("Jules completion without a PR", () => {
       },
     });
 
-    expect(mismatched.errorCode).toBe("paperclip_completion_interaction_mismatch");
+    expect(mismatched.exitCode).toBe(0);
+    expect(mismatched.summary).toContain("stale");
     expect(deleteStoredSession).not.toHaveBeenCalled();
     expect(mismatched.clearSession).toBe(false);
   });

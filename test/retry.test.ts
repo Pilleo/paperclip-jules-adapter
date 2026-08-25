@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { shouldRetry, getRetryNotBefore } from '../src/server/retry-policy';
+import { shouldRetry, getRetryNotBefore, parseRetryAfter } from '../src/server/retry-policy';
 import { AdapterConfig } from '../src/server/config';
 
 beforeAll(() => {
@@ -81,5 +81,12 @@ beforeAll(() => {
         const delayMinutes = (notBefore - now) / 1000 / 60;
         expect(Math.round(delayMinutes)).toBe(30);
     });
+  });
+
+  it('honors Retry-After when it exceeds jittered backoff', () => {
+    const now = Date.parse('2026-08-08T10:00:00.000Z');
+    expect(getRetryNotBefore(1, { now, random: 0.5, retryAfterMs: 300_000 })).toBe(now + 300_000);
+    expect(parseRetryAfter('120', now)).toBe(120_000);
+    expect(parseRetryAfter('Sat, 08 Aug 2026 10:03:00 GMT', now)).toBe(180_000);
   });
 });

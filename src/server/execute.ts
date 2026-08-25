@@ -311,7 +311,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!ctx.agent || typeof ctx.agent.adapterConfig === 'undefined') {
       throw new Error("Missing adapter config");
   }
-  const parsedCtxContext = CtxContextSchema.parse(ctx.context || {});
+  // Resumed runs (scheduled-retry promotion, heartbeat recovery) may arrive with
+  // an empty context - Paperclip does not re-attach task/paperclipIssue on those
+  // paths. When an existing session is being resumed, task identity is already
+  // captured in the stored prompt hash, so synthesize the minimum the schema
+  // requires instead of crashing before the poll loop. (Issue #7 follow-up /
+  // upstream ask: promote-with-context.)
+  const rawCtx: Record<string, unknown> =
+    ctx.context && typeof ctx.context === "object"
+      ? (ctx.context as Record<string, unknown>)
+      : {};
+  const resumedSessionId: string | undefined = (() => {
+    const sp: unknown = ctx.runtime?.sessionParams;
+    if (typeof sp !== "string" || sp.length <= 2) return undefined;
+    try {
+      return (JSON.parse(sp) as { julesSessionId?: string }).julesSessionId;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  const hasTaskIdentity = "task" in rawCtx || "paperclipIssue" in rawCtx;
+  const contextForParse: Record<string, unknown> =
+    !hasTaskIdentity && resumedSessionId
+      ? {
+          ...rawCtx,
+          task: { id: `resumed:${resumedSessionId}`, title: "Resumed Jules session", description: "" },
+        }
+      : rawCtx;
+  const parsedCtxContext = CtxContextSchema.parse(contextForParse);
   const rawContext = parsedCtxContext as Record<string, unknown>;
   const rawWorkspace = readContextRecord(parsedCtxContext, "workspace");
   const issueOverride = rawContext["julesSettings"] ?? rawContext["adapterSettings"];

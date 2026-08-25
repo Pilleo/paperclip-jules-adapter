@@ -79,6 +79,20 @@ beforeAll(() => {
     await expect(client.getSession(asJulesSessionId('invalid'))).rejects.toThrow(/404/);
   });
 
+  it('captures Retry-After without retrying a request implicitly', async () => {
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => name.toLowerCase() === 'retry-after' ? '90' : null },
+      text: async () => 'Rate limited',
+    });
+
+    const error = await client.getSession(asJulesSessionId('123')).catch((caught) => caught);
+    expect(error).toBeInstanceOf(JulesClientError);
+    expect(error.retryAfterMs).toBe(90_000);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('getSession sends correct request', async () => {
     const mockResponse = { name: 'sessions/123', state: 'RUNNING' };
     (global.fetch as any).mockResolvedValueOnce({

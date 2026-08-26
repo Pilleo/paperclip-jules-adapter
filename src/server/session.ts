@@ -70,6 +70,8 @@ export const JulesAdapterSessionV1Schema = z.object({
   failedSessions: z.array(FailedSessionSchema),
   currentPrUrl: z.string().optional(),
   pendingInteraction: PendingInteractionSchema.optional(),
+  /** Whether the next answered interaction should be relayed as sendMessage to Jules. */
+  relayNextAnswerToJules: z.boolean().optional(),
   /** Set after approvePlan is relayed successfully; prevents double-approve on resume. */
   planApprovedAt: z.string().optional(),
   feedbackInteractionAttempt: z.number().int().min(0).optional(),
@@ -132,6 +134,7 @@ export interface JulesAdapterSessionV1 {
   /** Monotonic key suffix used when a feedback card must be re-opened. */
   feedbackInteractionAttempt?: number | undefined;
   planApprovedAt?: string;
+  relayNextAnswerToJules?: boolean | undefined;
   pendingInteraction?:
     | {
         type: "user_feedback";

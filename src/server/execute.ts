@@ -573,7 +573,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             clearSession: false,
           };
         }
-        await client.sendMessage(session!.julesSessionId!, { prompt: answer });
+        // Relay gate: only forward to Jules when the operator intends it.
+        // Board-level replies (cleanup, status notes) are dismissed without
+        // reaching the session. Default: relay (Jules feedback cards).
+        if (session!.relayNextAnswerToJules !== false) {
+          await client.sendMessage(session!.julesSessionId!, { prompt: answer });
+        } else {
+          session!.relayNextAnswerToJules = undefined;
+        }
       } else {
         const resolvedRevisionId = interactionPlanRevisionId(storedPendingInteraction);
         if (!pendingProviderInteraction.planRevisionId || resolvedRevisionId !== pendingProviderInteraction.planRevisionId) {

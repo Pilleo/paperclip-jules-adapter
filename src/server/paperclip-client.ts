@@ -104,6 +104,19 @@ export async function listWorkProducts(
  * POST and the status PATCH would otherwise create duplicate primary PR cards.
  * (Issue #8)
  */
+/** Posts a standalone clickable Jules-session link as an issue comment. */
+export async function postSessionLink(
+  issueId: string,
+  sessionUrl: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/comments`, authToken, {
+    method: "POST",
+    body: JSON.stringify({ body: `[Open Jules session](${sessionUrl})` }),
+  }, runId);
+}
+
 export async function moveIssueToReview(
   issueId: string,
   prUrl: string,

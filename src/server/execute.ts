@@ -23,6 +23,7 @@ import {
   getPaperclipInteraction,
   moveIssueToBlocked,
   moveIssueToInProgress,
+  postSessionLink,
   moveIssueToDone,
   moveIssueToReview,
   PaperclipClientError,
@@ -649,10 +650,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const attempt = (isRetry && session) ? (session.attempt + 1) : 1;
 
     // RETRY PREFERENCE: resume the existing Jules session via chat for up to
-    // MAX_RESUME_ATTEMPTS consecutive executions. Each resume preserves full
+    // MAX_SESSION_RESUME_ATTEMPTS consecutive executions. Each resume preserves full
     // context. Only after exhausting resume attempts do we fall through to
     // new-session creation below, which naturally starts from the branch tip.
-    if (isRetry && session!.julesSessionId && attempt <= MAX_SESSION_RESUME_ATTEMPTS) {
+    //
+    // SKIP RESUME if the session already produced a PR: sending a chat message
+    // to a completed session starts a redundant cycle (observed live on MAZ-105).
+    const alreadyDeliveredPr = Boolean(session?.currentPrUrl);
+    if (alreadyDeliveredPr && isRetry) {
+      await ctx.onLog?.('stdout', `[jules] Session already delivered PR ${session!.currentPrUrl} - skipping resume.\n`);
+    } else if (isRetry && session!.julesSessionId && attempt <= MAX_SESSION_RESUME_ATTEMPTS) {
       await ctx.onLog?.('stdout', `[jules] Retrying by resuming session ${session!.julesSessionId} (attempt ${attempt}/${MAX_SESSION_RESUME_ATTEMPTS})\n`);
       await client.sendMessage(
           session!.julesSessionId as Parameters<typeof client.sendMessage>[0],
@@ -788,6 +795,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (createdSessionThisRun) {
     if (ctx.onLog) {
       await ctx.onLog('stdout', `[jules] Created session ${session.julesSessionId}; checkpointing before long polling.\n`);
+    }
+    if (session.julesSessionUrl) {
+      try { await postSessionLink(taskId, session.julesSessionUrl, ctx.authToken, ctx.runId); }
+      catch { /* board unavailable */ }
     }
     return createPendingResult(session, true);
   }

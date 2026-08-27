@@ -48,7 +48,7 @@ beforeAll(() => {
         }
     },
     runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
-    config: {},
+    config: { env: { JULES_API_KEY: 'test-key' } },
     context: {
 
         task: { id: 'task-1', title: 'Task' }
@@ -61,6 +61,7 @@ beforeAll(() => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    (JulesClient.prototype.listSessions as any).mockResolvedValue({ sessions: [] });
   });
 
   it('logs warning if task identity changed but not retry', async () => {
@@ -70,10 +71,12 @@ beforeAll(() => {
            version: 1,
            paperclipIssueId: 'task-1',
            promptHash: 'old-hash',
+           promptHashVersion: 2,
            repository: 'test',
            source: 'github',
            baseBranch: 'master',
            phase: 'RUNNING',
+           sessionId: 'sess-1',
            julesSessionId: 'sess-1',
            attempt: 1,
            failedSessions: [],

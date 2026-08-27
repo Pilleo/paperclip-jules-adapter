@@ -8,7 +8,9 @@ vi.mock('../src/server/jules-client', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/server/jules-client')>();
   const MockedJulesClient = vi.fn();
   MockedJulesClient.prototype.createSession = vi.fn();
+  MockedJulesClient.prototype.listSessions = vi.fn().mockResolvedValue({ sessions: [] });
   MockedJulesClient.prototype.getSession = vi.fn();
+  MockedJulesClient.prototype.getActivities = vi.fn().mockResolvedValue({ activities: [] });
   return {
     ...mod,
     JulesClient: MockedJulesClient
@@ -32,7 +34,7 @@ beforeAll(() => {
             }
         },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: 'task-1' },
-        config: {},
+        config: { env: { JULES_API_KEY: 'test-key' } },
         context: {
 
         task: { id: 'task-1', title: 'Task' }
@@ -68,7 +70,8 @@ beforeAll(() => {
         setTimeout(() => abortCtrl1.abort(), 10);
 
         let res = await execute({ ...baseCtx, abortSignal: abortCtrl1.signal } as any);
-        expect(res.exitCode).toBe(0);
+        expect(res.exitCode).toBe(1);
+        expect(res.errorCode).toBe('jules_session_pending');
         let session = sessionCodec.decode(res.sessionParams!);
         expect(session.julesSessionId).toBe('123');
         expect(session.phase).toBe('RUNNING');
@@ -86,10 +89,30 @@ beforeAll(() => {
             abortSignal: abortCtrl2.signal
         } as any);
 
-        expect(res.exitCode).toBe(0);
+        expect(res.exitCode).toBe(1);
+        expect(res.errorCode).toBe('jules_session_pending');
         session = sessionCodec.decode(res.sessionParams!);
         expect(session.julesSessionId).toBe('123');
         expect(session.phase).toBe('RUNNING');
+        expect(createdCount).toBe(1);
+
+        // Paperclip normalizes external-adapter resume state to canonical
+        // sessionId-only parameters before a later heartbeat.
+        step = 2;
+        const canonicalResume = { sessionId: '123' };
+        const abortCtrlCanonical = new AbortController();
+        setTimeout(() => abortCtrlCanonical.abort(), 10);
+
+        res = await execute({
+            ...baseCtx,
+            runtime: { ...baseCtx.runtime, sessionParams: canonicalResume },
+            abortSignal: abortCtrlCanonical.signal
+        } as any);
+
+        session = sessionCodec.decode(res.sessionParams!);
+        expect(session.julesSessionId).toBe('123');
+        expect(res.exitCode).toBe(1);
+        expect(res.errorCode).toBe('jules_session_pending');
         expect(createdCount).toBe(1);
 
         // Heartbeat 3: Completes and blocks requiring PR review
@@ -101,15 +124,16 @@ beforeAll(() => {
         const ctx3 = {
             ...baseCtx,
             runtime: { ...baseCtx.runtime, sessionParams: res.sessionParams },
-            abortSignal: abortCtrl3.signal
+            abortSignal: abortCtrl3.signal,
+            authToken: 'jwt-token'
         } as any;
+        global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
         res = await execute(ctx3);
 
         expect(res.exitCode).toBe(0);
-        expect(res.summary || "").toContain('Jules created PR: https://pr');
-        expect(res.clearSession).toBe(false); // Does not clear session so task remains active for PR review!
-        expect(res.question).toBeDefined();
-        expect(res.question!.prompt).toContain('Please review and merge it');
+        expect(res.summary || "").toContain('moved the Paperclip issue to review');
+        expect(res.clearSession).toBe(true);
         expect(createdCount).toBe(1);
     });
+
 });

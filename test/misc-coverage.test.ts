@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { execute } from '../src/server/execute';
 import { sessionCodec } from '../src/server/session';
 import { shouldRetry } from '../src/server/retry-policy';
@@ -15,14 +15,6 @@ vi.mock('../src/server/failure-classifier', async (importOriginal) => {
         classifyFailure: vi.fn((err) => mod.classifyFailure(err))
     };
 });
-
-beforeAll(() => {
-    process.env['JULES_API_KEY'] = 'test-key';
-  });
-
-  afterAll(() => {
-    delete process.env['JULES_API_KEY'];
-  });
 
   describe('Misc Coverage', () => {
     it('retry-policy shouldRetry handles transient failure outside loop limit', () => {
@@ -49,19 +41,35 @@ beforeAll(() => {
         const ctrl = new AbortController();
         const baseCtx = {
           agent: { adapterConfig: { source: 's', repository: 'r' } },
+          config: { env: { JULES_API_KEY: 'test-key' } },
           context: { secrets: { JULES_API_KEY: 'k' }, task: { id: 't', title: 't' } },
-          runtime: {},
+          runtime: {
+            sessionParams: sessionCodec.encode({
+              version: 1,
+              paperclipIssueId: 't',
+              promptHash: 'hash',
+              repository: 'r',
+              source: 's',
+              baseBranch: 'master',
+              phase: 'RUNNING',
+              sessionId: '1',
+              julesSessionId: '1',
+              attempt: 1,
+              failedSessions: [],
+              createdAt: new Date().toISOString()
+            } as any)
+          },
           runId: 'r',
           abortSignal: ctrl.signal
         } as any;
 
-        (JulesClient.prototype.createSession as any).mockResolvedValueOnce({ id: '1', name: 'sessions/1' });
         (JulesClient.prototype.getSession as any).mockRejectedValueOnce({ status: 500, message: 'Poll failed' });
         vi.mocked(classifyFailure).mockReturnValueOnce('transient');
 
         setTimeout(() => ctrl.abort(), 10);
 
         const res = await execute(baseCtx);
-        expect(res.exitCode).toBe(0);
+        expect(res.exitCode).toBe(1);
+        expect(res.errorCode).toBe('jules_session_pending');
     });
 });

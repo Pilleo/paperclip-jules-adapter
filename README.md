@@ -8,24 +8,36 @@ Google Jules sessions can run for days, executing complex coding tasks. Papercli
 
 ### How it works
 1. **Start**: The adapter maps a Paperclip task and prompt into a new Jules session.
-2. **Heartbeat Polling**: For roughly a two-minute window, it polls the Google API.
-3. **Persist & Park**: If Jules is still running after the window, the adapter durably parks the session state (`julesSessionId`, state enum, failure histories). Paperclip handles sleep/wake boundaries.
-4. **Resumption**: Paperclip resumes the adapter later, injecting the durable state, which triggers Jules polling again.
-5. **Completion**: If Jules completes (creating a PR), the task enters `in_review` via the Paperclip interactive PR workflow rather than silently marking itself complete.
-6. **Recovery**: Network transient failures, crashes, and 500s trigger a reliable backoff continuation without failing the task. Exhausted retries request human intervention via interaction blocks.
+2. **Durable checkpoint**: Immediately after creating a Jules session, it returns a pending continuation so Paperclip persists the provider session ID before any long wait.
+3. **Long polling**: Resumed runs poll every five minutes and remain attached for up to six hours. If Jules is still active, the adapter returns a durable transient continuation rather than a successful completion.
+4. **Resumption**: Paperclip resumes the adapter later, injecting the durable state. If Paperclip drops that state after a host configuration change, the adapter recovers the original session from Jules by Paperclip issue marker and repository before it is allowed to create another session.
+5. **Activity bridge**: New Jules agent messages, generated plans, and progress updates are mirrored to the Paperclip issue thread with the Jules activity ID. User-message echoes and terminal/provider bookkeeping activities are not copied.
+6. **Two-way decisions**: A Jules question creates a Paperclip reply card; its free-text answer is sent to Jules with `sendMessage`. A generated plan creates a Paperclip approval card; acceptance calls Jules `approvePlan`, while rejection keeps the issue blocked for manual Jules follow-up. Ordinary Paperclip comments are not forwarded to avoid accidental instructions.
+7. **Completion**: If Jules completes and creates a PR, the adapter moves the Paperclip issue to `in_review` and clears the completed Jules session from its active/recovery state. If Jules completes without a PR, the adapter blocks the issue and creates an idempotent Paperclip confirmation. Accepting it marks the issue `done`; rejecting it leaves the issue `blocked`. Either decision clears the terminal Jules session so the confirmation cannot accidentally start another Jules task.
+8. **Reopening**: Reopening an issue after a PR-backed completion starts a new Jules task from the issue's current title and description; terminal Jules sessions are not resumed.
+9. **Recovery**: Network transient failures, crashes, and 500s trigger a reliable backoff continuation without failing the task. Exhausted retries request human intervention via interaction blocks.
 
 ## Setup Instructions
 
-### Environment Variables
+### Paperclip secret binding
 
-The adapter requires `JULES_API_KEY` to securely access the Google Jules API. It explicitly looks for it inside the native server process environment; it must not be defined manually via internal `adapterConfig` registries.
+The adapter requires `JULES_API_KEY` to securely access the Google Jules API. Create the Paperclip shared secret with the normalized key `jules-api-key`, then bind it directly to the Jules agent at `env.JULES_API_KEY`.
 
-For a local installation:
+`jules-api-key` is the Paperclip secret-record key. `JULES_API_KEY` is the runtime environment-variable name; it must use underscores because environment variable names cannot contain dashes.
 
-```sh
-export JULES_API_KEY='AIza...'
-npx paperclipai
-```
+Paperclip resolves the binding into the adapter runtime for each run. The key must not be put in the Jules adapter configuration, issue overrides, prompts, or the Paperclip server process environment.
+
+The adapter deliberately does not fall back to `process.env.JULES_API_KEY`; a missing binding produces a diagnostic explaining how to create it.
+
+### Heartbeat requirement
+
+After a plan-approval interaction is accepted, the adapter relays `approvePlan` and
+the session enters its long RUNNING phase. Polling during that phase depends on
+Paperclip waking the agent: either enable `runtimeConfig.heartbeat`
+(e.g. `intervalSec: 300`) on the Jules agent, or ensure another mechanism sends
+`POST /api/agents/:id/heartbeat/invoke`. With heartbeat **disabled** and no external
+wake, completed sessions are never observed — the issue silently stays blocked
+(observed live 2026-08-25, issue #9).
 
 ### Paperclip UI Registry Integration
 
@@ -37,12 +49,12 @@ When correctly installed on your Paperclip server instance, the UI will dynamica
 - Jules source
 - Repository allowlist
 - Base branch
-- Poll intervals & automation modes.
+- Automation and retry policy; Jules polling timing is intentionally fixed.
 
 *Note:* You do **not** need to manually patch Paperclip UI or implement React `ConfigFields` yourself.
 
 ## Current Alpha Limitations
-* (v0.1.0) Jules interactions requiring bidirectional communication, such as user feedback questions and plan approvals, currently halt the adapter explicitly and request human intervention. You must review and answer those in the native Google Jules dashboard, and the adapter will resume naturally once it detects the state has progressed.
+* Rejected Jules plans cannot currently be sent back to Jules as a structured rejection because the Jules API exposes plan approval but no plan-rejection endpoint. The Paperclip issue remains blocked; the rejection and its reason stay on the Paperclip interaction for manual Jules follow-up.
 
 ## Development Requirements
 - Node 22

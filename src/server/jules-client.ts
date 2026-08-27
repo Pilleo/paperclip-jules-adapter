@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { JulesSessionName, JulesSessionId, JulesActivityId, PrUrl, parseJulesSessionName, toJulesSessionId, asPrUrl } from './brands.js';
+import { parseRetryAfter } from './retry-policy.js';
 
 export const JulesCreateSessionRequestSchema = z.object({
   title: z.string().optional(),
@@ -17,20 +18,20 @@ export const JulesCreateSessionRequestSchema = z.object({
 export type CreateSessionRequest = z.infer<typeof JulesCreateSessionRequestSchema>;
 
 export interface SendMessageRequest {
-  message: string;
-}
-
-export interface ApprovePlanRequest {
-  approved: boolean;
-  reason?: string | undefined;
+  prompt: string;
 }
 
 export class JulesClientError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public readonly retryAfterMs: number | null = null) {
     super(message);
     this.name = 'JulesClientError';
   }
 }
+
+// A provider request should never hold a Paperclip heartbeat indefinitely.
+// Long-running work happens inside Jules; the control-plane calls themselves
+// are expected to return promptly.
+const JULES_API_REQUEST_TIMEOUT_MS = 30_000;
 
 export const JulesStateSchema = z.enum([
   'QUEUED',
@@ -59,23 +60,64 @@ export type JulesFailure = z.infer<typeof JulesFailureSchema>;
 
 export const JulesSessionSchema = z.object({
   name: z.string().min(1),
+  title: z.string().optional(),
+  prompt: z.string().optional(),
+  sourceContext: z.object({
+    source: z.string(),
+    githubRepoContext: z.object({
+      startingBranch: z.string()
+    }).optional()
+  }).optional(),
+  createTime: z.string().optional(),
+  updateTime: z.string().optional(),
+  url: z.string().url().optional(),
   state: JulesStateSchema.optional(),
   outputs: z.array(z.unknown()).optional(),
   errorInfo: z.unknown().optional()
 }).catchall(z.unknown());
 
-export const JulesActivitySchema = z.object({
-  id: z.string().min(1),
-  type: z.string(),
-  questionText: z.string().optional(),
-  answered: z.boolean().optional(),
-  planSummary: z.string().optional(),
-  approved: z.boolean().optional()
+export const JulesSessionsResponseSchema = z.object({
+  sessions: z.array(JulesSessionSchema).optional(),
+  nextPageToken: z.string().optional()
 }).catchall(z.unknown());
 
-export const JulesActivitiesResponseSchema = z.object({
-  activities: z.array(JulesActivitySchema).optional()
+const JulesPlanStepSchema = z.object({
+  id: z.string().optional(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  index: z.number().int().optional(),
 }).catchall(z.unknown());
+
+const JulesActivityContentSchema = z.object({
+  agentMessaged: z.object({ agentMessage: z.string().optional() }).catchall(z.unknown()).optional(),
+  userMessaged: z.object({ userMessage: z.string().optional() }).catchall(z.unknown()).optional(),
+  planGenerated: z.object({
+    plan: z.object({
+      id: z.string().optional(),
+      steps: z.array(JulesPlanStepSchema).optional(),
+      createTime: z.string().optional(),
+    }).catchall(z.unknown()).optional(),
+  }).catchall(z.unknown()).optional(),
+  planApproved: z.object({ planId: z.string().optional() }).catchall(z.unknown()).optional(),
+  progressUpdated: z.object({ title: z.string().optional(), description: z.string().optional() }).catchall(z.unknown()).optional(),
+  sessionCompleted: z.unknown().optional(),
+  sessionFailed: z.object({ reason: z.string().optional() }).catchall(z.unknown()).optional(),
+}).catchall(z.unknown());
+
+export const JulesActivitySchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  createTime: z.string().optional(),
+  originator: z.string().optional(),
+}).merge(JulesActivityContentSchema).catchall(z.unknown());
+
+export const JulesActivitiesResponseSchema = z.object({
+  activities: z.array(z.record(z.string(), z.unknown())).optional(),
+  nextPageToken: z.string().optional(),
+}).catchall(z.unknown());
+
+export type JulesActivity = z.infer<typeof JulesActivitySchema>;
 
 export type JulesSessionRaw = z.infer<typeof JulesSessionSchema>;
 
@@ -83,18 +125,34 @@ export interface JulesSession {
     name: JulesSessionName;
     id: JulesSessionId;
     state?: string | undefined;
+    title?: string | undefined;
+    prompt?: string | undefined;
+    source?: string | undefined;
+    baseBranch?: string | undefined;
+    createTime?: string | undefined;
+    updateTime?: string | undefined;
+    url?: string | undefined;
     errorInfo?: JulesFailure | undefined;
     rawOutputs?: unknown[] | undefined;
 }
 
-export function extractPullRequestUrl(session: JulesSession): PrUrl | undefined {
-    if (!session.rawOutputs || !Array.isArray(session.rawOutputs)) {
-        return undefined;
+export function extractPullRequestUrl(session: JulesSession, activities?: JulesActivity[]): PrUrl | undefined {
+    if (session.rawOutputs && Array.isArray(session.rawOutputs)) {
+        for (const output of session.rawOutputs) {
+            const parsed = PullRequestOutputSchema.safeParse(output);
+            if (parsed.success && parsed.data.pullRequest.url) {
+                return asPrUrl(parsed.data.pullRequest.url);
+            }
+            const str = JSON.stringify(output);
+            const m = str.match(/https:\/\/github\.com\/[^"'\s]+\/pull\/\d+/);
+            if (m) return asPrUrl(m[0]);
+        }
     }
-    for (const output of session.rawOutputs) {
-        const parsed = PullRequestOutputSchema.safeParse(output);
-        if (parsed.success && parsed.data.pullRequest.url) {
-            return asPrUrl(parsed.data.pullRequest.url);
+    if (activities && Array.isArray(activities)) {
+        for (const act of activities) {
+            const str = JSON.stringify(act);
+            const m = str.match(/https:\/\/github\.com\/[^"'\s]+\/pull\/\d+/);
+            if (m) return asPrUrl(m[0]);
         }
     }
     return undefined;
@@ -109,13 +167,18 @@ export function toJulesFailure(errorInfo: unknown): JulesFailure {
 export class JulesClient {
   private baseUrl = 'https://jules.googleapis.com/v1alpha';
 
-  constructor(private apiKey: string) {
+  constructor(
+    private apiKey: string,
+    private telemetry?: (event: "api_request", sessionId: string | null, fields: Record<string, unknown>) => void | Promise<void>,
+  ) {
     if (!apiKey) {
       throw new Error("Jules API key is required");
     }
   }
 
   private async fetchApi(path: string, options: RequestInit = {}) {
+    const startedAt = Date.now();
+    const sessionId = path.match(/^\/sessions\/([^/:?]+)/)?.[1] ?? null;
     const url = `${this.baseUrl}${path}`;
     const headers = {
       'Content-Type': 'application/json',
@@ -123,7 +186,25 @@ export class JulesClient {
       ...options.headers,
     };
 
-    const response = await fetch(url, { ...options, headers });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers,
+        signal: options.signal ?? AbortSignal.timeout(JULES_API_REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      await this.telemetry?.("api_request", sessionId, {
+        method: options.method ?? "GET", route: path.split("?")[0], latencyMs: Date.now() - startedAt,
+        errorClass: error instanceof DOMException && error.name === "TimeoutError" ? "timeout" : "network",
+      });
+      throw error;
+    }
+
+    await this.telemetry?.("api_request", sessionId, {
+      method: options.method ?? "GET", route: path.split("?")[0], latencyMs: Date.now() - startedAt,
+      status: response.status, errorClass: response.ok ? null : response.status === 429 ? "rate_limit" : response.status >= 500 ? "upstream" : "terminal",
+    });
 
     if (!response.ok) {
       let errorText: unknown = 'Unknown error';
@@ -132,15 +213,26 @@ export class JulesClient {
       } catch (err) {
         // parsing failed
       }
-      throw new JulesClientError(response.status, `Jules API error (${response.status}): ${typeof errorText === 'string' ? errorText : 'Unknown error'}`);
+      const retryAfter = typeof response.headers?.get === "function"
+        ? parseRetryAfter(response.headers.get("retry-after"))
+        : null;
+      throw new JulesClientError(
+        response.status,
+        `Jules API error (${response.status}): ${typeof errorText === 'string' ? errorText : 'Unknown error'}`,
+        retryAfter,
+      );
     }
 
     if (response.status === 204) {
       return null;
     }
 
-    const data = await response.json();
-    return data;
+    try {
+      return await response.json();
+    } catch {
+      // approvePlan and sendMessage deliberately return an empty response body.
+      return null;
+    }
   }
 
   private mapSession(raw: JulesSessionRaw): JulesSession {
@@ -149,6 +241,13 @@ export class JulesClient {
           name,
           id: toJulesSessionId(name),
           state: raw.state,
+          title: raw.title,
+          prompt: raw.prompt,
+          source: raw.sourceContext?.source,
+          baseBranch: raw.sourceContext?.githubRepoContext?.startingBranch,
+          createTime: raw.createTime,
+          updateTime: raw.updateTime,
+          url: raw.url,
           errorInfo: raw.errorInfo ? toJulesFailure(raw.errorInfo) : undefined,
           rawOutputs: raw.outputs
       };
@@ -168,13 +267,45 @@ export class JulesClient {
     return this.mapSession(JulesSessionSchema.parse(data));
   }
 
-  async getActivities(sessionId: JulesSessionId, pageToken?: string) {
-    const url = new URL(`${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/activities`);
-    if (pageToken) {
-        url.searchParams.append('pageToken', pageToken);
+  async listSessions(pageSize = 100, pageToken?: string): Promise<{
+    sessions: JulesSession[];
+    nextPageToken?: string | undefined;
+  }> {
+    const searchParams = new URLSearchParams({ pageSize: String(pageSize) });
+    if (pageToken) searchParams.set('pageToken', pageToken);
+
+    const data = JulesSessionsResponseSchema.parse(
+      await this.fetchApi(`/sessions?${searchParams.toString()}`)
+    );
+    return {
+      sessions: (data.sessions ?? []).map((raw) => this.mapSession(raw)),
+      nextPageToken: data.nextPageToken
+    };
+  }
+
+  async getActivities(sessionId: JulesSessionId, pageToken?: string, pageSize = 100) {
+    const searchParams = new URLSearchParams({ pageSize: String(pageSize) });
+    if (pageToken) searchParams.set("pageToken", pageToken);
+    const rawData = await this.fetchApi(
+      `/sessions/${encodeURIComponent(sessionId)}/activities?${searchParams.toString()}`,
+    );
+    const parsed = JulesActivitiesResponseSchema.safeParse(rawData);
+    if (!parsed.success) {
+      return { activities: [], nextPageToken: undefined };
     }
-    const data = await this.fetchApi(url.pathname + url.search);
-    return JulesActivitiesResponseSchema.parse(data);
+    const safeActivities: JulesActivity[] = [];
+    for (const item of parsed.data.activities ?? []) {
+      const res = JulesActivitySchema.safeParse(item);
+      if (res.success) {
+        safeActivities.push(res.data as JulesActivity);
+      } else if (typeof item === "object" && item !== null && typeof (item as any).id === "string") {
+        safeActivities.push(item as JulesActivity);
+      }
+    }
+    return {
+      activities: safeActivities,
+      nextPageToken: parsed.data.nextPageToken,
+    };
   }
 
   async sendMessage(sessionId: JulesSessionId, request: SendMessageRequest) {
@@ -184,10 +315,9 @@ export class JulesClient {
     });
   }
 
-  async approvePlan(sessionId: JulesSessionId, request: ApprovePlanRequest) {
+  async approvePlan(sessionId: JulesSessionId) {
     return this.fetchApi(`/sessions/${encodeURIComponent(sessionId)}:approvePlan`, {
       method: 'POST',
-      body: JSON.stringify(request)
     });
   }
 }

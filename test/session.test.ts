@@ -18,6 +18,7 @@ beforeAll(() => {
     source: 'github',
     baseBranch: 'master',
     phase: 'RUNNING',
+    sessionId: 'sess-456',
     julesSessionId: 'sess-456',
     attempt: 1,
     failedSessions: [],

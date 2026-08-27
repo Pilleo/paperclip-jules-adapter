@@ -1,17 +1,19 @@
 import { AdapterConfig, requireJulesApiKey, validateConfig } from "./config.js";
 import { JulesClient } from "./jules-client.js";
-import { asJulesSessionId } from "./brands.js";
 import { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { sanitizeError } from "./error-sanitizer.js";
+import { checkJulesCredentials, checkLocalState } from "./health.js";
+import { sessionStoreDirectory } from "./session-store.js";
 
 export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
-  const config = ctx.config?.['adapterSchemaValues'] || ctx.config || {};
+  const runtimeConfig = ctx.config || {};
+  const config = runtimeConfig['adapterSchemaValues'] || runtimeConfig;
 
   let validatedConfig: AdapterConfig;
   let apiKey: string;
   try {
      validatedConfig = validateConfig(config);
-     apiKey = requireJulesApiKey();
+     apiKey = requireJulesApiKey(runtimeConfig);
   } catch (err: unknown) {
       const diagnosticKeys = Object.keys(config).sort().join(", ") || "(none)";
       return {
@@ -28,8 +30,25 @@ export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promi
 
   const client = new JulesClient(apiKey);
 
+  const stateDirectory = sessionStoreDirectory();
+  if (stateDirectory) {
+    const localState = await checkLocalState(stateDirectory);
+    if (!localState.ok) {
+      return {
+        adapterType: "jules", status: "fail", testedAt: new Date().toISOString(),
+        checks: [{ code: localState.code, level: "error", message: localState.message }],
+      };
+    }
+  }
+
   try {
-     await client.getSession(asJulesSessionId('test-auth-check'));
+     const credentials = await checkJulesCredentials(client);
+     if (!credentials.ok) {
+       return {
+         adapterType: "jules", status: "fail", testedAt: new Date().toISOString(),
+         checks: [{ code: credentials.code, level: "error", message: credentials.message }],
+       };
+     }
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'status' in err) {
         const status = (err as { status: number }).status;

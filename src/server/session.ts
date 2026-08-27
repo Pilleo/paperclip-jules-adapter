@@ -5,6 +5,7 @@ import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 export const JulesSessionStateSchema = z.string();
 export type JulesSessionState = z.infer<typeof JulesSessionStateSchema>;
 
+export type SessionPhase = z.infer<typeof SessionPhaseSchema>;
 export const SessionPhaseSchema = z.enum([
   "STARTING",
   "RUNNING",
@@ -20,25 +21,49 @@ export const FailedSessionSchema = z.object({
   sessionId: z.string().optional(),
   failedAt: z.string(),
   message: z.string(),
-  classification: z.enum(["transient", "configuration", "task", "unknown"])
+  classification: z.enum(["transient", "configuration", "task", "unknown"]),
+  /** PR URL if the failed session had created one before failing. */
+  prUrl: z.string().optional()
 });
 
-export const PendingInteractionSchema = z.object({
-  type: z.enum(["user_feedback", "plan_approval"]),
-  julesActivityId: z.string(),
-  paperclipInteractionId: z.string().optional(),
-  question: z.string(),
-  createdAt: z.string()
-});
+export const PendingInteractionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("user_feedback"),
+    julesActivityId: z.string(),
+    paperclipInteractionId: z.string().optional(),
+    question: z.string(),
+    createdAt: z.string()
+  }),
+  z.object({
+    type: z.literal("plan_approval"),
+    julesActivityId: z.string(),
+    paperclipInteractionId: z.string().optional(),
+    question: z.string(),
+    planDocumentId: z.string().min(1),
+    planRevisionId: z.string().min(1),
+    planRevisionNumber: z.number().int().positive(),
+    createdAt: z.string()
+  }),
+  z.object({
+    type: z.literal("completion_confirmation"),
+    paperclipInteractionId: z.string().min(1),
+    question: z.string(),
+    createdAt: z.string()
+  })
+]);
 
 export const JulesAdapterSessionV1Schema = z.object({
   version: z.literal(1),
   paperclipIssueId: z.string(),
   promptHash: z.string(),
+  promptHashVersion: z.number().int().positive().optional(),
   repository: z.string(),
   source: z.string(),
   baseBranch: z.string(),
   phase: SessionPhaseSchema,
+  // Paperclip's canonical provider session identity. For an active Jules
+  // session it is deliberately duplicated by the provider-specific field.
+  sessionId: z.string().min(1).optional(),
   julesSessionId: z.string().optional(),
   julesSessionUrl: z.string().optional(),
   julesState: JulesSessionStateSchema.optional(),
@@ -46,19 +71,57 @@ export const JulesAdapterSessionV1Schema = z.object({
   failedSessions: z.array(FailedSessionSchema),
   currentPrUrl: z.string().optional(),
   pendingInteraction: PendingInteractionSchema.optional(),
+  /** Standing channel: id of the always-open "Reply to Jules" interaction. */
+  standingChannelId: z.string().optional(),
+  relayNextAnswerToJules: z.boolean().optional(),
+  /** Set after approvePlan is relayed successfully; prevents double-approve on resume. */
+  planApprovedAt: z.string().optional(),
+  feedbackInteractionAttempt: z.number().int().min(0).optional(),
+  deliveredFeedbackInteractionId: z.string().optional(),
+  deliveredActivityIds: z.array(z.string().min(1)).max(200).optional(),
+  activityCheckpoint: z.object({
+    createTime: z.string().datetime(),
+    id: z.string().min(1),
+  }).optional(),
   lastActivityId: z.string().optional(),
   createdAt: z.string(),
   lastPolledAt: z.string().optional()
+}).superRefine((session, ctx) => {
+  const hasSessionId = session.sessionId !== undefined;
+  const hasJulesSessionId = session.julesSessionId !== undefined;
+
+  if (session.phase === "RETRY_SCHEDULED") {
+    if (hasSessionId !== hasJulesSessionId ||
+        (hasSessionId && session.sessionId !== session.julesSessionId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sessionId"],
+        message: "sessionId and julesSessionId must be provided together and be equal"
+      });
+    }
+    return;
+  }
+
+  if (!hasSessionId || !hasJulesSessionId || session.sessionId !== session.julesSessionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["sessionId"],
+      message: "Active Jules sessions require equal sessionId and julesSessionId"
+    });
+  }
 });
 
 export interface JulesAdapterSessionV1 {
   version: 1;
   paperclipIssueId: PaperclipId;
   promptHash: string;
+  promptHashVersion?: number | undefined;
   repository: string;
   source: string;
   baseBranch: string;
   phase: z.infer<typeof SessionPhaseSchema>;
+  /** Paperclip canonical session identity; equal to julesSessionId when present. */
+  sessionId?: string | undefined;
   julesSessionId?: JulesSessionId | undefined;
   julesSessionUrl?: string | undefined;
   julesState?: string | undefined;
@@ -68,15 +131,44 @@ export interface JulesAdapterSessionV1 {
     failedAt: string;
     message: string;
     classification: "transient" | "configuration" | "task" | "unknown";
+    prUrl?: string | undefined;
   }>;
   currentPrUrl?: PrUrl | undefined;
-  pendingInteraction?: {
-    type: "user_feedback" | "plan_approval";
-    julesActivityId: JulesActivityId;
-    paperclipInteractionId?: string | undefined;
-    question: string;
-    createdAt: string;
-  } | undefined;
+  /** Monotonic key suffix used when a feedback card must be re-opened. */
+  feedbackInteractionAttempt?: number | undefined;
+  deliveredFeedbackInteractionId?: string | undefined;
+  planApprovedAt?: string;
+  standingChannelId?: string | undefined;
+  relayNextAnswerToJules?: boolean | undefined;
+  pendingInteraction?:
+    | {
+        type: "user_feedback";
+        julesActivityId: JulesActivityId;
+        paperclipInteractionId?: string | undefined;
+        question: string;
+        createdAt: string;
+      }
+    | {
+        type: "plan_approval";
+        julesActivityId: JulesActivityId;
+        paperclipInteractionId?: string | undefined;
+        question: string;
+        planDocumentId: string;
+        planRevisionId: string;
+        planRevisionNumber: number;
+        createdAt: string;
+      }
+    | {
+        type: "completion_confirmation";
+        paperclipInteractionId: string;
+        question: string;
+        createdAt: string;
+      }
+    | undefined;
+  /** Recent Jules activities already mirrored to the Paperclip issue thread. */
+  deliveredActivityIds?: string[] | undefined;
+  /** High-water mark for the normalized Jules activity stream. */
+  activityCheckpoint?: { createTime: string; id: string } | undefined;
   lastActivityId?: string | undefined;
   createdAt: string;
   lastPolledAt?: string | undefined;
@@ -93,6 +185,15 @@ function isEmptyRecord(value: unknown): boolean {
   );
 }
 
+function parseCanonicalSessionParams(data: unknown): Record<string, string> | null {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+
+  const sessionId = (data as Record<string, unknown>)["sessionId"];
+  if (typeof sessionId !== "string" || sessionId.trim().length === 0) return null;
+
+  return { sessionId: sessionId.trim() };
+}
+
 function parseSessionRecord(data: unknown): JulesAdapterSessionV1 | null {
   if (data == null || isEmptyRecord(data)) return null;
 
@@ -105,14 +206,14 @@ function parseSessionRecord(data: unknown): JulesAdapterSessionV1 | null {
 
 export const sessionCodec = {
   deserialize(data: unknown): Record<string, unknown> | null {
-      return parseSessionRecord(data) as Record<string, unknown> | null;
+      return (parseSessionRecord(data) ?? parseCanonicalSessionParams(data)) as Record<string, unknown> | null;
   },
   serialize(session: Record<string, unknown> | null): Record<string, unknown> | null {
       if (session == null) return null;
       try {
           return JulesAdapterSessionV1Schema.parse(session) as Record<string, unknown>;
       } catch {
-          return null;
+          return parseCanonicalSessionParams(session);
       }
   },
   decode(data: unknown): JulesAdapterSessionV1 | null {
@@ -124,10 +225,14 @@ export const sessionCodec = {
         paperclipIssueId: asPaperclipId(raw.paperclipIssueId),
         julesSessionId: raw.julesSessionId ? asJulesSessionId(raw.julesSessionId) : undefined,
         currentPrUrl: raw.currentPrUrl ? asPrUrl(raw.currentPrUrl) : undefined,
-        pendingInteraction: raw.pendingInteraction ? {
-            ...raw.pendingInteraction,
-            julesActivityId: asJulesActivityId(raw.pendingInteraction.julesActivityId)
-        } : undefined
+        pendingInteraction: raw.pendingInteraction
+          ? raw.pendingInteraction.type === "completion_confirmation"
+            ? raw.pendingInteraction
+            : {
+                ...raw.pendingInteraction,
+                julesActivityId: asJulesActivityId(raw.pendingInteraction.julesActivityId)
+              }
+          : undefined
     } as JulesAdapterSessionV1;
   },
 
@@ -138,7 +243,11 @@ export const sessionCodec = {
   getDisplayId(session: Record<string, unknown> | null): string | null {
     if (!session) return null;
     const parsed = this.deserialize(session);
-    return parsed?.['julesSessionId'] as string || null;
+    return parsed?.['julesSessionId'] as string || parsed?.['sessionId'] as string || null;
+  },
+
+  getCanonicalSessionId(session: unknown): string | null {
+    return parseCanonicalSessionParams(session)?.["sessionId"] ?? null;
   }
 };
 export function serializeSession(session: JulesAdapterSessionV1): SerializedSessionParams {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { buildPrompt, hashPrompt, PromptContext } from '../src/server/prompt-builder';
+import { buildPrompt, hashPrompt, hashPromptIdentity, PromptContext } from '../src/server/prompt-builder';
 import { AdapterConfig } from '../src/server/config';
 
 beforeAll(() => {
@@ -31,6 +31,8 @@ beforeAll(() => {
     expect(prompt).toContain('[paperclip-run:run-456]');
     expect(prompt).toContain('Base Branch: main');
     expect(prompt).toContain('Instruction');
+    expect(prompt).toContain('If repository changes are needed, create a pull request');
+    expect(prompt).toContain('complete without a PR');
     expect(prompt).not.toContain('A previous Jules session failed');
   });
 
@@ -51,5 +53,14 @@ beforeAll(() => {
     const diffCtx = { ...ctx, description: 'new desc' };
     const diffPrompt = buildPrompt(diffCtx, config);
     expect(hashPrompt(prompt1)).not.toBe(hashPrompt(diffPrompt));
+  });
+
+  it('uses a stable task identity across Paperclip run ids', () => {
+    expect(hashPromptIdentity(ctx, config)).toBe(
+      hashPromptIdentity({ ...ctx, runId: 'run-789' }, config),
+    );
+    expect(hashPromptIdentity(ctx, config)).not.toBe(
+      hashPromptIdentity({ ...ctx, description: 'changed task' }, config),
+    );
   });
 });

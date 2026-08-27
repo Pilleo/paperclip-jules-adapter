@@ -5,6 +5,7 @@ import { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 export const JulesSessionStateSchema = z.string();
 export type JulesSessionState = z.infer<typeof JulesSessionStateSchema>;
 
+export type SessionPhase = z.infer<typeof SessionPhaseSchema>;
 export const SessionPhaseSchema = z.enum([
   "STARTING",
   "RUNNING",
@@ -76,6 +77,7 @@ export const JulesAdapterSessionV1Schema = z.object({
   /** Set after approvePlan is relayed successfully; prevents double-approve on resume. */
   planApprovedAt: z.string().optional(),
   feedbackInteractionAttempt: z.number().int().min(0).optional(),
+  deliveredFeedbackInteractionId: z.string().optional(),
   deliveredActivityIds: z.array(z.string().min(1)).max(200).optional(),
   activityCheckpoint: z.object({
     createTime: z.string().datetime(),
@@ -134,6 +136,7 @@ export interface JulesAdapterSessionV1 {
   currentPrUrl?: PrUrl | undefined;
   /** Monotonic key suffix used when a feedback card must be re-opened. */
   feedbackInteractionAttempt?: number | undefined;
+  deliveredFeedbackInteractionId?: string | undefined;
   planApprovedAt?: string;
   standingChannelId?: string | undefined;
   relayNextAnswerToJules?: boolean | undefined;

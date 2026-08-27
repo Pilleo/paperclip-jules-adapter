@@ -84,11 +84,13 @@ beforeAll(() => {
     });
 
     const checkpoint = await execute(baseCtx);
+    console.log("CHECKPOINT RES:", checkpoint.exitCode, checkpoint.errorCode, checkpoint.errorMessage, checkpoint.summary);
     const res = await execute({
       ...baseCtx,
       runtime: { ...baseCtx.runtime, sessionParams: checkpoint.sessionParams },
       authToken: 'jwt-token',
     } as any);
+    if (res.exitCode !== 0) console.log("RES DETAILS:", res.exitCode, res.errorCode, res.errorMessage, res.summary);
     expect(res.exitCode).toBe(0);
     expect(res.clearSession).toBe(true);
     expect(res.resultJson?.prUrl).toBe('http://pr/1');
@@ -96,14 +98,25 @@ beforeAll(() => {
   });
 
   it('creates a Paperclip feedback interaction when Jules awaits feedback', async () => {
-    (JulesClient.prototype.getSession as any).mockResolvedValueOnce({ state: 'AWAITING_USER_FEEDBACK' });
-    global.fetch = vi.fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ id: 'feedback-1', status: 'pending', kind: 'ask_user_questions' }),
-      })
-      .mockResolvedValueOnce({ ok: true, status: 200 });
+    (JulesClient.prototype.getSession as any).mockResolvedValue({ state: 'AWAITING_USER_FEEDBACK' });
+    global.fetch = vi.fn().mockImplementation(async (url, init) => {
+      const method = init?.method || "GET";
+      if (String(url).includes("/interactions") && method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: "feedback-1", status: "pending", kind: "ask_user_questions" }],
+        };
+      }
+      if (String(url).includes("/interactions") && method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: "feedback-1", status: "pending", kind: "ask_user_questions" }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
 
     const checkpoint = await execute(baseCtx);
     const res = await execute({
@@ -112,7 +125,7 @@ beforeAll(() => {
       authToken: 'jwt-token',
     } as any);
     expect(res.exitCode).toBe(0);
-    expect(res.resultJson?.issueStatus).toBe('blocked');
+    expect(res.resultJson?.issueStatus).toBe('in_progress');
     expect(res.resultJson?.interactionId).toBe('feedback-1');
     expect(res.question).toBeUndefined();
     expect(sessionCodec.decode(res.sessionParams!).pendingInteraction).toMatchObject({

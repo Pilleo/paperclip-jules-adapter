@@ -1,3 +1,4 @@
+import { formatCardPrompt, formatCardSummary, formatCardPromptAndHelpText, SafeCardPrompt, SafeCardSummary } from "./card-prompt.js";
 const PAPERCLIP_API_URL_ENV = "PAPERCLIP_API_URL";
 
 export class PaperclipClientError extends Error {
@@ -13,6 +14,7 @@ export interface PaperclipInteraction {
   kind?: string;
   result?: unknown;
   target?: unknown;
+  idempotencyKey?: string;
 }
 
 export interface PlanRevision {
@@ -30,8 +32,11 @@ function paperclipApiBaseUrl(): string {
 }
 
 function requireAuthToken(authToken: string | undefined): string {
-  if (!authToken) throw new PaperclipClientError(null, "Paperclip local agent token is unavailable");
-  return authToken;
+  const token = (typeof authToken === "string" && authToken.trim().length > 0)
+    ? authToken.trim()
+    : process.env["PAPERCLIP_AGENT_TOKEN"] || process.env["PAPERCLIP_API_KEY"];
+  if (!token) throw new PaperclipClientError(null, "Paperclip local agent token is unavailable");
+  return token;
 }
 
 async function paperclipRequest(
@@ -186,6 +191,7 @@ function interactionFromResponse(raw: unknown, status: number): PaperclipInterac
     result: record["result"],
     target: (record["payload"] as Record<string, unknown> | undefined)?.["target"] ?? record["target"],
     ...(typeof record["kind"] === "string" ? { kind: record["kind"] } : {}),
+    ...(typeof record["idempotencyKey"] === "string" ? { idempotencyKey: record["idempotencyKey"] } : {}),
   };
 }
 
@@ -197,11 +203,10 @@ export async function addJulesActivityComment(
   authToken: string | undefined,
   runId?: string,
 ): Promise<void> {
-  const details = sessionUrl ? `\n\n[Open Jules session](${sessionUrl})` : "";
   await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/comments`, authToken, {
     method: "POST",
     body: JSON.stringify({
-      body: `${body}${details}`,
+      body,
       authorType: "agent",
     }),
   }, runId);
@@ -211,38 +216,52 @@ export async function createJulesFeedbackInteraction(
   issueId: string,
   sessionId: string,
   activityId: string,
-  question: string,
+  question: SafeCardPrompt | string,
   authToken: string | undefined,
   attempt = 1,
   runId?: string,
+  summary?: SafeCardSummary | string,
 ): Promise<PaperclipInteraction> {
-  const response = await paperclipRequest(
-    `/api/issues/${encodeURIComponent(issueId)}/interactions`, authToken, {
-      method: "POST",
-      body: JSON.stringify({
-        kind: "ask_user_questions",
-        idempotencyKey: `jules:user-feedback:${issueId}:${sessionId}:${activityId}:${attempt}`,
-        title: "Reply to Jules",
-        summary: "Jules is waiting for feedback.",
-        continuationPolicy: "wake_assignee",
-        payload: {
-          version: 1,
-          title: "Reply to Jules",
-          submitLabel: "Send to Jules",
-          questions: [{
-            id: "reply",
-            prompt: question.slice(0, 2000),
-            helpText: "Enter your response in the Other field.",
-            selectionMode: "single",
-            required: true,
-            options: [{ id: "other", label: "Write a response" }],
-          }],
-        },
-      }),
-    },
-    runId,
-  );
-  return interactionFromResponse(await response.json(), response.status);
+  const idempotencyKey = `jules:user-feedback:${issueId}:${sessionId}:${activityId}:${attempt}`;
+  const { prompt: safePrompt, helpText: customHelpText } = formatCardPromptAndHelpText(typeof question === "string" ? question : String(question));
+  const safeSummary = formatCardSummary(summary ?? question);
+  try {
+    const response = await paperclipRequest(
+      `/api/issues/${encodeURIComponent(issueId)}/interactions`, authToken, {
+        method: "POST",
+        body: JSON.stringify({
+          kind: "ask_user_questions",
+          idempotencyKey,
+          title: "Question from Jules",
+          summary: safeSummary,
+          continuationPolicy: "wake_assignee",
+          payload: {
+            version: 1,
+            title: "Question from Jules",
+            submitLabel: "Send to Jules",
+            questions: [{
+              id: "reply",
+              prompt: safePrompt,
+              helpText: customHelpText ? customHelpText + "\n\nType your answer or instructions for Jules below." : "Type your answer or instructions for Jules below.",
+              selectionMode: "single",
+              required: true,
+              options: [{ id: "response", label: "Write a response", freeText: true }],
+            }],
+          },
+        }),
+      },
+      runId,
+    );
+    return interactionFromResponse(await response.json(), response.status);
+  } catch (error) {
+    if (error instanceof PaperclipClientError && (error.status === 409 || error.status === 422 || error.status === 400)) {
+      const existing = await listPaperclipInteractions(issueId, authToken, runId).catch(() => []);
+      const match = existing.find((i) => i.idempotencyKey === idempotencyKey) ||
+        existing.find((i) => i.kind === "ask_user_questions");
+      if (match) return match;
+    }
+    throw error;
+  }
 }
 
 export async function createJulesPlanApprovalInteraction(
@@ -319,6 +338,19 @@ export async function createJulesPlanApprovalInteraction(
     ...interactionFromResponse(await response.json(), response.status),
     planRevision: { documentId, revisionId, revisionNumber },
   };
+}
+
+export async function listPaperclipInteractions(
+  issueId: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<PaperclipInteraction[]> {
+  const response = await paperclipRequest(`/api/issues/${encodeURIComponent(issueId)}/interactions`, authToken, {
+    method: "GET",
+  }, runId);
+  const raw: unknown = await response.json();
+  if (!Array.isArray(raw)) return [];
+  return raw.map((value) => interactionFromResponse(value, response.status));
 }
 
 export async function getPaperclipInteraction(

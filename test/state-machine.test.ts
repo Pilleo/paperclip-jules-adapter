@@ -23,10 +23,10 @@ beforeAll(() => {
   it('handles PAUSED', () => {
     const res = handleJulesState('PAUSED', false);
     expect(res).toEqual({
-      nextPhase: 'RUNNING',
-      requiresReturn: false,
-      isTerminal: false,
-      clearSession: false
+      nextPhase: 'STARTING',
+      requiresReturn: true,
+      isTerminal: true,
+      clearSession: true
     });
   });
 

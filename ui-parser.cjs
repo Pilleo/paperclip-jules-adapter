@@ -1,6 +1,6 @@
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+"use strict";
 
-export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[] {
+function parseStdoutLine(line, ts) {
   const trimmed = line.trim();
   if (!trimmed) return [];
 
@@ -21,12 +21,12 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
             ts,
             name: obj.name || "tool",
             input: obj.input || { diff: obj.data },
-            toolUseId: obj.id || `jules-${Date.now()}`,
+            toolUseId: obj.id || "jules-" + Date.now(),
           },
         ];
       }
       if (obj.event === "api_request") {
-        return [{ kind: "system", ts, text: `API ${obj.method} ${obj.route} (${obj.status})` }];
+        return [{ kind: "system", ts, text: "API " + obj.method + " " + obj.route + " (" + obj.status + ")" }];
       }
     } catch {
       // Fall through to plain text handling
@@ -42,7 +42,7 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
         ts,
         name: "bash",
         input: { command: cmd },
-        toolUseId: `jules-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        toolUseId: "jules-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
       },
     ];
   }
@@ -68,3 +68,5 @@ export function parseJulesStdoutLine(line: string, ts: string): TranscriptEntry[
   // 5. Default text output -> assistant message
   return [{ kind: "assistant", ts, text: line }];
 }
+
+module.exports = { parseStdoutLine };

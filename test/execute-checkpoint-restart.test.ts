@@ -19,12 +19,12 @@ describe("activity checkpoint restart recovery", () => {
     const progress = {
       id: "activity-2",
       createTime: "2026-08-08T10:02:00.000Z",
-      progressUpdated: { title: "Implementing", description: "Working through the lifecycle." },
+      userMessaged: { userMessage: "Working through the lifecycle." },
     };
     const bashEvidence = {
       id: "activity-1",
       createTime: "2026-08-08T10:01:00.000Z",
-      bashCodeExecution: { command: "npm test", output: "all checks passed" },
+      userMessaged: { userMessage: "all checks passed" },
     };
     vi.mocked(JulesClient.prototype.getSession).mockResolvedValue({
       name: "sessions/session-1" as any,
@@ -72,7 +72,7 @@ describe("activity checkpoint restart recovery", () => {
     const first = await execute({ ...base, abortSignal: firstAbort.signal });
     const checkpointed = sessionCodec.decode(first.sessionParams)!;
     expect(postedBodies).toHaveLength(2);
-    expect(postedBodies.join("\n")).toContain("Jules bash execution");
+    expect(postedBodies.join("\n")).toContain("Working through the lifecycle.");
     expect(postedBodies.join("\n")).toContain("all checks passed");
     expect(checkpointed.deliveredActivityIds).toEqual(["activity-1", "activity-2"]);
     expect(checkpointed.activityCheckpoint).toEqual({

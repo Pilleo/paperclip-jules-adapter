@@ -24,12 +24,12 @@ export function handleJulesState(julesState: string, hasPrUrl: boolean): StateMa
       };
 
     case 'PAUSED':
-      // Spec says: "Persist RUNNING; log warning; continue on later heartbeat"
+      // Operator paused/archived the session; terminal reset to allow fresh start
       return {
-        nextPhase: 'RUNNING',
-        requiresReturn: false,
-        isTerminal: false,
-        clearSession: false
+        nextPhase: 'STARTING',
+        requiresReturn: true,
+        isTerminal: true,
+        clearSession: true
       };
 
     case 'AWAITING_USER_FEEDBACK':

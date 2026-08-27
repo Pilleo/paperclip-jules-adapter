@@ -90,10 +90,7 @@ describe("Jules activity interactions", () => {
 
     const result = await execute(baseContext);
 
-    expect(addJulesActivityComment).toHaveBeenCalledWith(
-      "issue-1", "activity-question", expect.stringContaining("Jules message"),
-      "https://jules.example/session-1", "jwt-token", "run-1",
-    );
+    // Question is rendered inside the interactive card rather than duplicated as an orphaned comment
     expect(createJulesFeedbackInteraction).toHaveBeenCalledWith(
       "issue-1", "session-1", "activity-question", "Which branch should I use?", "jwt-token", 1, "run-1",
     );

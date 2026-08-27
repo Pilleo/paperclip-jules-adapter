@@ -242,7 +242,7 @@ export async function createJulesFeedbackInteraction(
             questions: [{
               id: "reply",
               prompt: safePrompt,
-              helpText: customHelpText ? customHelpText + "\n\nType your answer or instructions for Jules below." : "Type your answer or instructions for Jules below.",
+              helpText: customHelpText ? (customHelpText.slice(0, 930) + "\n\nType your answer or instructions for Jules below.") : "Type your answer or instructions for Jules below.",
               selectionMode: "single",
               required: true,
               options: [{ id: "response", label: "Write a response", freeText: true }],

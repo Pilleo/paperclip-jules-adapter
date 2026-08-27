@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { evaluateInteractionAction } from "../src/server/interaction-engine.js";
 import { JulesAdapterSessionV1 } from "../src/server/session.js";
 

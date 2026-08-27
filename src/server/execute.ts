@@ -558,17 +558,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakeReason = readContextString(parsedCtxContext, "wakeReason") ?? readContextString(paperclipWake, "wakeReason");
   const previousStatus = readContextString(parsedCtxContext, "previousStatus") ?? readContextString(paperclipWake, "previousStatus");
 
-  const isTransitionFromBacklogOrReopened = Boolean(
+  const isInteractionResume = Boolean(
+    rawContext["interactionResponse"] ||
+    rawContext["providerInteractionStatus"] ||
+    wakeSource === "interaction_response" ||
+    (typeof wakeReason === "string" && /interaction/i.test(wakeReason))
+  );
+
+  const isTransitionFromBacklogOrReopened = !isInteractionResume && Boolean(
     previousStatus === "backlog" ||
     previousStatus === "done" ||
     previousStatus === "cancelled" ||
-    (wakeSource === "status_change" && previousStatus === "todo") ||
-    (typeof wakeReason === "string" && /(backlog|reopened|archived)/i.test(wakeReason))
+    (wakeSource === "status_change" && (previousStatus === "todo" || previousStatus === "backlog")) ||
+    (typeof wakeReason === "string" && /(moved from backlog|reopened|archived)/i.test(wakeReason))
   );
 
-  const forceFreshSession = Boolean(
+  const forceFreshSession = !isInteractionResume && Boolean(
     (parsedCtxContext as { forceFreshSession?: boolean })?.forceFreshSession ||
-    (parsedCtxContext as { contextSnapshot?: { forceFreshSession?: boolean } })?.contextSnapshot?.forceFreshSession ||
+    (paperclipWake as { forceFreshSession?: boolean })?.forceFreshSession ||
     isTransitionFromBacklogOrReopened
   );
 

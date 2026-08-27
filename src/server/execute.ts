@@ -503,12 +503,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const client = new JulesClient(apiKey, telemetry);
   const taskTitle = parsedCtxContext.task.title;
   const taskDescription = parsedCtxContext.task.description;
+  const forceFreshSession = Boolean((parsedCtxContext as { forceFreshSession?: boolean })?.forceFreshSession);
+
+  if (forceFreshSession) {
+    session = null;
+    await deleteStoredSession(taskId, config.source, config.baseBranch).catch(() => {});
+  }
 
   // Paperclip's external-adapter resume path normalizes persisted state to the
   // canonical `{ sessionId }` shape. Rebuild the adapter-local polling state
   // from that identity so a heartbeat resumes the remote Jules session rather
   // than creating another one.
-  if (!session && canonicalSessionId) {
+  if (!session && canonicalSessionId && !forceFreshSession) {
     session = {
       version: 1,
       paperclipIssueId: taskId,
@@ -525,7 +531,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  if (!session) {
+  if (!session && !forceFreshSession) {
     try {
       session = await loadStoredSession(taskId, config.source, config.baseBranch);
       if (session && ctx.onLog) {
@@ -792,37 +798,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // context. Only after exhausting resume attempts do we fall through to
     // new-session creation below, which naturally starts from the branch tip.
     //
-    // If no session passed in context, check if an active remote Jules session already exists before creating a new one
-    if (!session) {
-      try {
-        const { sessions: activeSessions } = await client.listSessions(20);
-        const match = (activeSessions || []).find(
-          (s) => s.state === "IN_PROGRESS" || s.state === "AWAITING_USER_FEEDBACK" || s.state === "AWAITING_PLAN_APPROVAL"
-        );
-        if (match) {
-          await ctx.onLog?.("stdout", `[jules] Found existing active remote session ${match.id} (${match.state}) - binding to it instead of creating a duplicate.\n`);
-          session = {
-            version: 1,
-            paperclipIssueId: taskId,
-            promptHash: "",
-            repository: config.repository,
-            source: config.source,
-            baseBranch: config.baseBranch,
-            phase: "RUNNING",
-            sessionId: match.id,
-            julesSessionId: asJulesSessionId(match.id),
-            julesSessionUrl: match.url,
-            attempt: 1,
-            failedSessions: [],
-            createdAt: match.createTime || new Date().toISOString(),
-          };
-          await persistSessionBestEffort(session, ctx.onLog);
-          return createPendingResult(session, true);
-        }
-      } catch (err) {
-        await ctx.onLog?.("stderr", `[jules] Remote session discovery check failed: ${sanitizeError(err)}\n`);
-      }
-    }
+
 
     // SKIP RESUME if the session already produced a PR: sending a chat message
     // to a completed session starts a redundant cycle (observed live on MAZ-105).

@@ -7,7 +7,7 @@ import {
 import { formatCardPrompt, formatCardSummary } from "./card-prompt.js";
 import { getPullRequestCiStatus, getPullRequestDetails } from "./ci-status.js";
 import { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { AdapterConfig, validateConfig, requireJulesApiKey } from "./config.js";
+import { AdapterConfig, validateConfig, requireJulesApiKey, discoverLocalGitDefaultBranch } from "./config.js";
 import { JulesAdapterSessionV1, sessionCodec, serializeSession } from "./session.js";
 import { JulesActivity, JulesClient, JulesClientError, extractPullRequestUrl } from "./jules-client.js";
 import { buildPrompt, hashPromptIdentity, PROMPT_IDENTITY_HASH_VERSION } from "./prompt-builder.js";
@@ -471,16 +471,65 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   const parsedCtxContext = CtxContextSchema.parse(contextForParse);
   const rawContext = parsedCtxContext as Record<string, unknown>;
-  const rawWorkspace = readContextRecord(parsedCtxContext, "workspace");
+  const rawWorkspace = readContextRecord(parsedCtxContext, "workspace") ?? readContextRecord(parsedCtxContext, "paperclipWorkspace");
   const issueOverride = rawContext["julesSettings"] ?? rawContext["adapterSettings"];
-  const workspaceRepositoryUrl = readContextString(rawWorkspace, "repositoryUrl") ?? readContextString(rawWorkspace, "repoUrl");
-  const workspaceDefaultBranch = readContextString(rawWorkspace, "defaultBranch") ?? readContextString(rawWorkspace, "defaultRef");
+  let workspaceRepositoryUrl = readContextString(rawWorkspace, "repositoryUrl") ?? readContextString(rawWorkspace, "repoUrl");
+  let workspaceDefaultBranch = readContextString(rawWorkspace, "defaultBranch") ?? readContextString(rawWorkspace, "defaultRef");
+
+  let projectId = readContextString(parsedCtxContext, "projectId") ??
+    readContextString(readContextRecord(parsedCtxContext, "contextSnapshot"), "projectId") ??
+    readContextString(readContextRecord(parsedCtxContext, "task"), "projectId") ??
+    readContextString(readContextRecord(parsedCtxContext, "paperclipIssue"), "projectId");
+
+  const effectiveTaskId = asPaperclipId(String((extractedTask as { id?: unknown })?.id ?? parsedCtxContext.task.id));
+
+  // Project lookup
+  if (process.env["NODE_ENV"] !== "test" && !projectId && effectiveTaskId && !effectiveTaskId.startsWith("resumed:")) {
+    try {
+      const issueRes = await fetch(`http://127.0.0.1:3100/api/issues/${encodeURIComponent(effectiveTaskId)}`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (issueRes.ok) {
+        const issueData = await issueRes.json();
+        if (issueData.projectId) projectId = issueData.projectId;
+      }
+    } catch (e) {
+      if (ctx.onLog) await ctx.onLog("stderr", `[jules] Issue fetch error: ${e}\n`);
+    }
+  }
+
+  let workspaceCwd = readContextString(rawWorkspace, "cwd");
+
+  if (process.env["NODE_ENV"] !== "test" && projectId) {
+    try {
+      const projectRes = await fetch(`http://127.0.0.1:3100/api/projects/${encodeURIComponent(projectId)}`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (projectRes.ok) {
+        const projectData = await projectRes.json();
+        const pRepo = projectData.primaryWorkspace?.repoUrl ?? projectData.codebase?.repoUrl;
+        const pBranch = projectData.primaryWorkspace?.defaultRef ?? projectData.codebase?.defaultRef;
+        const pCwd = projectData.primaryWorkspace?.cwd ?? projectData.codebase?.localFolder ?? projectData.codebase?.effectiveLocalFolder;
+        if (pRepo) workspaceRepositoryUrl = pRepo;
+        if (pBranch) workspaceDefaultBranch = pBranch;
+        if (pCwd) {
+          workspaceCwd = pCwd;
+          const discovered = discoverLocalGitDefaultBranch(pCwd);
+          if (discovered && !workspaceDefaultBranch) workspaceDefaultBranch = discovered;
+        }
+        if (ctx.onLog) await ctx.onLog("stdout", `[jules] Resolved project ${projectData.name} -> repo: ${workspaceRepositoryUrl}, branch: ${workspaceDefaultBranch}\n`);
+      }
+    } catch (e) {
+      if (ctx.onLog) await ctx.onLog("stderr", `[jules] Project fetch error: ${e}\n`);
+    }
+  }
   const warnings: string[] = [];
   const config = validateConfig(ctx.agent.adapterConfig, {
     issueOverride,
     workspace: {
       ...(workspaceRepositoryUrl ? { repositoryUrl: workspaceRepositoryUrl } : {}),
       ...(workspaceDefaultBranch ? { defaultBranch: workspaceDefaultBranch } : {}),
+      ...(workspaceCwd ? { cwd: workspaceCwd } : {}),
       ...(rawWorkspace["hasRemote"] === false ? { hasRemote: false } : {}),
     },
     warn: message => warnings.push(message),
@@ -503,7 +552,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const client = new JulesClient(apiKey, telemetry);
   const taskTitle = parsedCtxContext.task.title;
   const taskDescription = parsedCtxContext.task.description;
-  const forceFreshSession = Boolean((parsedCtxContext as { forceFreshSession?: boolean })?.forceFreshSession);
+
+  const paperclipWake = readContextRecord(parsedCtxContext, "paperclipWake");
+  const wakeSource = readContextString(parsedCtxContext, "wakeSource") ?? readContextString(paperclipWake, "wakeSource");
+  const wakeReason = readContextString(parsedCtxContext, "wakeReason") ?? readContextString(paperclipWake, "wakeReason");
+  const previousStatus = readContextString(parsedCtxContext, "previousStatus") ?? readContextString(paperclipWake, "previousStatus");
+
+  const isTransitionFromBacklogOrReopened = Boolean(
+    previousStatus === "backlog" ||
+    previousStatus === "done" ||
+    previousStatus === "cancelled" ||
+    (wakeSource === "status_change" && previousStatus === "todo") ||
+    (typeof wakeReason === "string" && /(backlog|reopened|archived)/i.test(wakeReason))
+  );
+
+  const forceFreshSession = Boolean(
+    (parsedCtxContext as { forceFreshSession?: boolean })?.forceFreshSession ||
+    (parsedCtxContext as { contextSnapshot?: { forceFreshSession?: boolean } })?.contextSnapshot?.forceFreshSession ||
+    isTransitionFromBacklogOrReopened
+  );
 
   if (forceFreshSession) {
     session = null;
@@ -547,7 +614,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  const paperclipWake = readContextRecord(parsedCtxContext, "paperclipWake");
   const interactionId = readContextString(parsedCtxContext, "interactionId") ??
     readContextString(paperclipWake, "interactionId");
   const interactionKind = readContextString(parsedCtxContext, "interactionKind") ??
@@ -1324,29 +1390,75 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               if (ctx.onLog) {
                 await ctx.onLog(
                   "stdout",
-                  `[jules] Session ${action.sessionId} was paused/archived by operator. Resetting state and creating a fresh task.\n`,
+                  `[jules] Session ${action.sessionId} was paused/archived by operator. Creating fresh Jules session immediately.\n`,
                 );
               }
               try {
                 await addJulesActivityComment(
                   taskId,
                   "session-paused-reset",
-                  `ℹ️ Previous Jules session \`${action.sessionId}\` was paused/archived by the operator. Clearing previous state to start fresh from the current branch tip.`,
+                  `ℹ️ Previous Jules session \`${action.sessionId}\` was paused/archived by the operator. Launching fresh session for this issue.`,
                   session.julesSessionUrl,
                   ctx.authToken,
                   ctx.runId,
                 );
               } catch {}
-              await deleteStoredSession(taskId, config.source, config.baseBranch);
-              return {
-                exitCode: 0,
-                signal: null,
-                timedOut: false,
-                summary: `Jules session ${action.sessionId} was paused/archived by operator; cleared state so next run starts fresh from branch tip.`,
-                sessionParams: null,
-                sessionDisplayId: null,
-                clearSession: true,
+              await deleteStoredSession(taskId, config.source, config.baseBranch).catch(() => {});
+
+              const promptContext = {
+                issueId: taskId,
+                runId: ctx.runId,
+                title: taskTitle,
+                description: taskDescription,
+                isRetry: false,
+                resumeAttempt: 0,
+                priorPrUrls: [],
               };
+              const prompt = buildPrompt(promptContext, config);
+              const pHash = hashPromptIdentity(promptContext, config);
+
+              const newJulesSession = await client.createSession({
+                prompt,
+                title: taskTitle,
+                sourceContext: {
+                  source: config.source,
+                  githubRepoContext: {
+                    startingBranch: config.baseBranch,
+                  },
+                },
+                requirePlanApproval: config.requirePlanApproval,
+                automationMode: config.automationMode,
+              });
+
+              const freshSession: JulesAdapterSessionV1 = {
+                version: 1,
+                paperclipIssueId: taskId,
+                promptHash: pHash,
+                promptHashVersion: PROMPT_IDENTITY_HASH_VERSION,
+                repository: config.repository,
+                source: config.source,
+                baseBranch: config.baseBranch,
+                phase: "RUNNING",
+                sessionId: newJulesSession.id,
+                julesSessionId: newJulesSession.id,
+                julesSessionUrl: newJulesSession.url,
+                attempt: 1,
+                failedSessions: [{
+                  sessionId: action.sessionId,
+                  failedAt: new Date().toISOString(),
+                  message: "Archived by operator",
+                  classification: "task",
+                }],
+                createdAt: new Date().toISOString(),
+              };
+
+              session = freshSession;
+              await persistSessionBestEffort(freshSession, ctx.onLog);
+              if (freshSession.julesSessionUrl) {
+                try { await postSessionLink(taskId, freshSession.julesSessionUrl, ctx.authToken, ctx.runId); }
+                catch {}
+              }
+              return createPendingResult(freshSession, true);
             }
 
             case "CONTINUE_POLLING":

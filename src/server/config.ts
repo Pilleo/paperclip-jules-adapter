@@ -81,7 +81,7 @@ const SettingsSchema = z.object({
 
 export interface ConfigResolutionContext {
   issueOverride?: unknown;
-  workspace?: { repositoryUrl?: string; defaultBranch?: string; hasRemote?: boolean };
+  workspace?: { repositoryUrl?: string; defaultBranch?: string; hasRemote?: boolean; cwd?: string };
   codeChanging?: boolean;
   warn?: (message: string) => void;
 }
@@ -134,7 +134,9 @@ export function validateConfig(config: unknown, context: ConfigResolutionContext
 
     const fromSource = sourceRepository(merged.source);
     const discoveredRepo = context.workspace?.repositoryUrl ?? discoverLocalGitRepository();
-    const repositoryInput = merged.repository ?? fromSource ?? merged.repositoryUrl ?? discoveredRepo;
+    const overrideRepo = override.repository ?? (override.source ? sourceRepository(override.source) : undefined) ?? override.repositoryUrl;
+    const projectOrWorkspaceRepo = context.workspace?.repositoryUrl;
+    const repositoryInput = overrideRepo ?? projectOrWorkspaceRepo ?? merged.repository ?? fromSource ?? discoveredRepo;
     const repository = merged.repository && !merged.repository.includes("/") && merged.source
       ? merged.repository
       : RepositorySchema.parse(repositoryInput);
@@ -143,7 +145,8 @@ export function validateConfig(config: unknown, context: ConfigResolutionContext
     if (merged.repository && fromSource && RepositorySchema.parse(merged.repository) !== fromSource) {
       throw new Error("Legacy `source` and `repository` identify different repositories; remove the conflict explicitly");
     }
-    const baseBranch = merged.baseBranch ?? merged.defaultBranch ?? context.workspace?.defaultBranch ?? (merged.source ? "master" : undefined);
+    const discoveredBranch = context.workspace?.cwd ? discoverLocalGitDefaultBranch(context.workspace.cwd) : undefined;
+    const baseBranch = override.baseBranch ?? override.defaultBranch ?? context.workspace?.defaultBranch ?? discoveredBranch ?? merged.baseBranch ?? merged.defaultBranch ?? (merged.source ? "master" : undefined);
     if (!merged.baseBranch && !merged.defaultBranch && !context.workspace?.defaultBranch && merged.source) warn("Legacy configuration omitted baseBranch; retaining its historical `master` intent. Configure provider metadata or an explicit branch.");
     if (!baseBranch) throw new Error("baseBranch could not be derived; configure repository provider metadata or set baseBranch explicitly (for example `main`)");
     if (merged.requirePlanApproval !== undefined) warn("`requirePlanApproval` is deprecated; use `planApprovalPolicy`.");

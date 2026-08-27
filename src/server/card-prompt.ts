@@ -11,7 +11,7 @@ declare const SafeCardSummaryBrand: unique symbol;
 export type SafeCardSummary = string & { readonly [SafeCardSummaryBrand]: true };
 
 export const MAX_CARD_PROMPT_LENGTH = 490;
-export const MAX_CARD_HELP_TEXT_LENGTH = 990;
+export const MAX_CARD_HELP_TEXT_LENGTH = 900;
 export const MAX_CARD_SUMMARY_LENGTH = 190;
 
 /**

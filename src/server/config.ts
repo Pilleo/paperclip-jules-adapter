@@ -1,3 +1,47 @@
+import { execSync } from "node:child_process";
+
+export function discoverLocalGitRepository(cwd?: string): string | undefined {
+  try {
+    const remoteUrl = execSync("git config --get remote.origin.url", {
+      cwd: cwd || process.cwd(),
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+    if (remoteUrl) return remoteUrl;
+  } catch {
+    // git command unavailable or not a git repository
+  }
+  return undefined;
+}
+
+export function discoverLocalGitDefaultBranch(cwd?: string): string | undefined {
+  try {
+    // 1. Try origin/HEAD symbolic ref
+    const ref = execSync("git symbolic-ref --short refs/remotes/origin/HEAD", {
+      cwd: cwd || process.cwd(),
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+    if (ref) return ref.replace(/^origin\//, "");
+  } catch {
+    // ignore
+  }
+  try {
+    // 2. Fallback to current HEAD branch
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: cwd || process.cwd(),
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+    if (branch && branch !== "HEAD") return branch;
+  } catch {
+    // ignore
+  }
+  return "master";
+}
 import { z } from "zod";
 
 const RepositorySchema = z.string().trim().min(1).transform((value, ctx) => {
@@ -62,7 +106,7 @@ export interface AdapterConfig {
 export const SAFE_DEFAULTS = {
   planApprovalPolicy: "required",
   prPolicy: "auto",
-  pollCadenceSeconds: 300,
+  pollCadenceSeconds: 45,
   requestTimeoutSeconds: 30,
   retryBudget: 3,
   sessionDeadlineMinutes: 360,
@@ -89,7 +133,8 @@ export function validateConfig(config: unknown, context: ConfigResolutionContext
     const warn = (message: string) => { warnings.push(message); context.warn?.(message); };
 
     const fromSource = sourceRepository(merged.source);
-    const repositoryInput = merged.repository ?? fromSource ?? merged.repositoryUrl ?? context.workspace?.repositoryUrl;
+    const discoveredRepo = context.workspace?.repositoryUrl ?? discoverLocalGitRepository();
+    const repositoryInput = merged.repository ?? fromSource ?? merged.repositoryUrl ?? discoveredRepo;
     const repository = merged.repository && !merged.repository.includes("/") && merged.source
       ? merged.repository
       : RepositorySchema.parse(repositoryInput);

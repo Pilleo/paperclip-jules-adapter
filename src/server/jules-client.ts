@@ -82,28 +82,26 @@ export const JulesSessionsResponseSchema = z.object({
 }).catchall(z.unknown());
 
 const JulesPlanStepSchema = z.object({
-  id: z.string().min(1),
-  title: z.string(),
+  id: z.string().optional(),
+  title: z.string().optional(),
   description: z.string().optional(),
-  // Live Jules responses may omit this output-only field; their array order
-  // remains the canonical plan order.
   index: z.number().int().optional(),
 }).catchall(z.unknown());
 
 const JulesActivityContentSchema = z.object({
-  agentMessaged: z.object({ agentMessage: z.string() }).optional(),
-  userMessaged: z.object({ userMessage: z.string() }).optional(),
+  agentMessaged: z.object({ agentMessage: z.string().optional() }).catchall(z.unknown()).optional(),
+  userMessaged: z.object({ userMessage: z.string().optional() }).catchall(z.unknown()).optional(),
   planGenerated: z.object({
     plan: z.object({
-      id: z.string().min(1),
-      steps: z.array(JulesPlanStepSchema),
+      id: z.string().optional(),
+      steps: z.array(JulesPlanStepSchema).optional(),
       createTime: z.string().optional(),
-    }).catchall(z.unknown()),
-  }).optional(),
-  planApproved: z.object({ planId: z.string().min(1) }).optional(),
-  progressUpdated: z.object({ title: z.string(), description: z.string().optional() }).optional(),
+    }).catchall(z.unknown()).optional(),
+  }).catchall(z.unknown()).optional(),
+  planApproved: z.object({ planId: z.string().optional() }).catchall(z.unknown()).optional(),
+  progressUpdated: z.object({ title: z.string().optional(), description: z.string().optional() }).catchall(z.unknown()).optional(),
   sessionCompleted: z.unknown().optional(),
-  sessionFailed: z.object({ reason: z.string() }).optional(),
+  sessionFailed: z.object({ reason: z.string().optional() }).catchall(z.unknown()).optional(),
 }).catchall(z.unknown());
 
 export const JulesActivitySchema = z.object({
@@ -115,7 +113,7 @@ export const JulesActivitySchema = z.object({
 }).merge(JulesActivityContentSchema).catchall(z.unknown());
 
 export const JulesActivitiesResponseSchema = z.object({
-  activities: z.array(JulesActivitySchema).optional(),
+  activities: z.array(z.record(z.string(), z.unknown())).optional(),
   nextPageToken: z.string().optional(),
 }).catchall(z.unknown());
 
@@ -138,14 +136,23 @@ export interface JulesSession {
     rawOutputs?: unknown[] | undefined;
 }
 
-export function extractPullRequestUrl(session: JulesSession): PrUrl | undefined {
-    if (!session.rawOutputs || !Array.isArray(session.rawOutputs)) {
-        return undefined;
+export function extractPullRequestUrl(session: JulesSession, activities?: JulesActivity[]): PrUrl | undefined {
+    if (session.rawOutputs && Array.isArray(session.rawOutputs)) {
+        for (const output of session.rawOutputs) {
+            const parsed = PullRequestOutputSchema.safeParse(output);
+            if (parsed.success && parsed.data.pullRequest.url) {
+                return asPrUrl(parsed.data.pullRequest.url);
+            }
+            const str = JSON.stringify(output);
+            const m = str.match(/https:\/\/github\.com\/[^"'\s]+\/pull\/\d+/);
+            if (m) return asPrUrl(m[0]);
+        }
     }
-    for (const output of session.rawOutputs) {
-        const parsed = PullRequestOutputSchema.safeParse(output);
-        if (parsed.success && parsed.data.pullRequest.url) {
-            return asPrUrl(parsed.data.pullRequest.url);
+    if (activities && Array.isArray(activities)) {
+        for (const act of activities) {
+            const str = JSON.stringify(act);
+            const m = str.match(/https:\/\/github\.com\/[^"'\s]+\/pull\/\d+/);
+            if (m) return asPrUrl(m[0]);
         }
     }
     return undefined;
@@ -278,11 +285,27 @@ export class JulesClient {
 
   async getActivities(sessionId: JulesSessionId, pageToken?: string, pageSize = 100) {
     const searchParams = new URLSearchParams({ pageSize: String(pageSize) });
-    if (pageToken) searchParams.set('pageToken', pageToken);
-    const data = await this.fetchApi(
+    if (pageToken) searchParams.set("pageToken", pageToken);
+    const rawData = await this.fetchApi(
       `/sessions/${encodeURIComponent(sessionId)}/activities?${searchParams.toString()}`,
     );
-    return JulesActivitiesResponseSchema.parse(data);
+    const parsed = JulesActivitiesResponseSchema.safeParse(rawData);
+    if (!parsed.success) {
+      return { activities: [], nextPageToken: undefined };
+    }
+    const safeActivities: JulesActivity[] = [];
+    for (const item of parsed.data.activities ?? []) {
+      const res = JulesActivitySchema.safeParse(item);
+      if (res.success) {
+        safeActivities.push(res.data as JulesActivity);
+      } else if (typeof item === "object" && item !== null && typeof (item as any).id === "string") {
+        safeActivities.push(item as JulesActivity);
+      }
+    }
+    return {
+      activities: safeActivities,
+      nextPageToken: parsed.data.nextPageToken,
+    };
   }
 
   async sendMessage(sessionId: JulesSessionId, request: SendMessageRequest) {

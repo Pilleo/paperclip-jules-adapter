@@ -31,10 +31,10 @@ import {
 } from "./paperclip-client.js";
 import { createTelemetry } from "./telemetry.js";
 
-const JULES_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const JULES_POLL_INTERVAL_MS = 45 * 1000;
 const JULES_WATCH_WINDOW_MS = 6 * 60 * 60 * 1000;
-const JULES_CONTINUATION_DELAY_MS = 5 * 60 * 1000;
-const JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS = 15 * 1000;
+const JULES_CONTINUATION_DELAY_MS = 60 * 1000;
+const JULES_INITIAL_ACTIVITY_CHECK_DELAY_MS = 5 * 1000;
 
 function readContextString(context: Record<string, unknown>, key: string): string | null {
   const value = context[key];
@@ -143,7 +143,7 @@ async function persistSessionBestEffort(
 
 function activityComment(activity: JulesActivity): string | null {
   if (activity.planGenerated) {
-    const steps = [...activity.planGenerated.plan.steps]
+    const steps = [...(activity.planGenerated.plan?.steps ?? [])]
       .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
       .map((step, position) =>
         `${(step.index ?? position) + 1}. **${step.title}**${step.description ? ` — ${step.description}` : ""}`)
@@ -152,7 +152,8 @@ function activityComment(activity: JulesActivity): string | null {
   }
   if (activity.progressUpdated) {
     const description = activity.progressUpdated.description?.trim();
-    return `**Jules progress: ${activity.progressUpdated.title}**${description ? `\n\n${description}` : ""}`;
+    const title = activity.progressUpdated.title || "Update";
+    return `**Jules progress: ${title}**${description ? `\n\n${description}` : ""}`;
   }
   if (activity.agentMessaged) return `**Jules message**\n\n${activity.agentMessaged.agentMessage}`;
   if (activity.userMessaged) return `**Message sent to Jules**\n\n${activity.userMessaged.userMessage}`;
@@ -188,7 +189,20 @@ function activityComment(activity: JulesActivity): string | null {
 }
 
 function latestAgentMessage(activities: JulesActivity[]): JulesActivity | null {
-  return [...activities].reverse().find((activity) => Boolean(activity.agentMessaged)) ?? null;
+  return (
+    [...activities].reverse().find(
+      (activity) => Boolean(activity.agentMessaged?.agentMessage?.trim()) || Boolean(activity.description?.trim())
+    ) ?? null
+  );
+}
+
+function extractQuestionText(activity: JulesActivity | null): string {
+  if (!activity) return 'Jules is waiting for feedback. Open the Jules session for the full question.';
+  const msg = activity.agentMessaged?.agentMessage?.trim();
+  if (msg) return msg;
+  const desc = activity.description?.trim();
+  if (desc) return desc;
+  return 'Jules is waiting for feedback. Open the Jules session for the full question.';
 }
 
 function latestPlan(activities: JulesActivity[]): JulesActivity | null {
@@ -246,6 +260,58 @@ const MAX_COMMENT_LENGTH = 3500;
 /** Consecutive resume attempts on the same Jules session before creating a fresh one. */
 const MAX_SESSION_RESUME_ATTEMPTS = 4;
 
+function formatActivityForLog(activity: JulesActivity): string {
+  const ts = activity.createTime ? new Date(activity.createTime).toLocaleTimeString() : new Date().toLocaleTimeString();
+  const raw = activity as Record<string, unknown>;
+
+  if (activity.planGenerated) {
+    const steps = [...(activity.planGenerated.plan?.steps ?? [])]
+      .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+      .map((step, idx) => "  " + ((step.index ?? idx) + 1) + ". " + step.title + (step.description ? " (" + step.description + ")" : ""))
+      .join("\n");
+    return "[jules][" + ts + "] Generated Plan:\n" + steps + "\n";
+  }
+
+  if (activity.progressUpdated) {
+    const desc = activity.progressUpdated.description?.trim();
+    const title = activity.progressUpdated.title || "Update";
+    return "[jules][" + ts + "] Progress: " + title + (desc ? " - " + desc : "") + "\n";
+  }
+
+  if (activity.agentMessaged) {
+    return "[jules][" + ts + "] Agent: " + activity.agentMessaged.agentMessage + "\n";
+  }
+
+  if (activity.userMessaged) {
+    return "[jules][" + ts + "] User input: " + activity.userMessaged.userMessage + "\n";
+  }
+
+  if (raw["bashCodeExecution"]) {
+    const b = raw["bashCodeExecution"] as Record<string, unknown>;
+    const cmd = String(b["command"] ?? b["code"] ?? "");
+    const out = String(b["output"] ?? b["stdout"] ?? b["result"] ?? "");
+    return "[jules][" + ts + "] $ " + cmd + "\n" + (out ? out + "\n" : "");
+  }
+
+  if (raw["changeSet"]) {
+    return "[jules][" + ts + "] Changeset applied:\n" + JSON.stringify(raw["changeSet"], null, 2) + "\n";
+  }
+
+  if (activity.sessionCompleted) {
+    return "[jules][" + ts + "] Session completed successfully.\n";
+  }
+
+  if (activity.sessionFailed) {
+    return "[jules][" + ts + "] Session failed: " + activity.sessionFailed.reason + "\n";
+  }
+
+  if (activity.description) {
+    return "[jules][" + ts + "] " + activity.description + "\n";
+  }
+
+  return "[jules][" + ts + "] Activity: " + activity.id + "\n";
+}
+
 async function mirrorNewActivities(
   client: JulesClient,
   session: JulesAdapterSessionV1,
@@ -258,6 +324,10 @@ async function mirrorNewActivities(
   const delivered = new Set(session.deliveredActivityIds ?? []);
   for (const activity of activities) {
     if (!isAfterCheckpoint(activity, session.activityCheckpoint) || delivered.has(activity.id)) continue;
+    if (onLog) {
+      const logLine = formatActivityForLog(activity);
+      await onLog("stdout", logLine);
+    }
     const rawBody = activityComment(activity);
     // Paperclip rejects oversized comments (observed 422 on a long verdict) -
     // truncate with an explicit marker instead of losing the delivery to an error.
@@ -275,8 +345,8 @@ async function mirrorNewActivities(
         await addJulesActivityComment(taskId, activity.id, body, session.julesSessionUrl, authToken, runId);
       } catch (commentError) {
         await onLog?.(
-          "stderr",
-          `[jules-mirror] failed to deliver activity ${activity.id}: ${String(commentError)}\n`,
+          "stdout",
+          `[jules-mirror] comment delivery skipped for activity ${activity.id}: ${String(commentError)}\n`,
         );
       }
     }
@@ -642,8 +712,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       session!.pendingInteraction = undefined;
       session!.phase = "RUNNING";
       await persistSessionBestEffort(session!, ctx.onLog);
-      // Jules can take a few seconds to leave its waiting state.  Polling it in
-      // this same heartbeat would see the old state and create a duplicate card.
       return createPendingResult(session!, true);
     } catch (error) {
       return paperclipInteractionFailure(session!, error);
@@ -801,7 +869,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // this exact remote session instead of creating another one.
   if (createdSessionThisRun) {
     if (ctx.onLog) {
-      await ctx.onLog('stdout', `[jules] Created session ${session.julesSessionId}; checkpointing before long polling.\n`);
+      await ctx.onLog("stdout", `[jules] Created session ${session.julesSessionId}; checkpointing before long polling.\n`);
     }
     if (session.julesSessionUrl) {
       try { await postSessionLink(taskId, session.julesSessionUrl, ctx.authToken, ctx.runId); }
@@ -836,12 +904,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const state = julesSession.state || 'UNKNOWN';
       session.julesState = state;
       session.lastPolledAt = new Date().toISOString();
+      if (ctx.onLog) {
+        await ctx.onLog("stdout", `[jules][${new Date().toLocaleTimeString()}] Polled session status: ${state}\n`);
+      }
       if (julesSession.url) {
           session.julesSessionUrl = julesSession.url;
       }
-      const prUrl = extractPullRequestUrl(julesSession);
-      if (prUrl) {
+      let prUrl = extractPullRequestUrl(julesSession);
+      if (prUrl && session.currentPrUrl !== prUrl) {
           session.currentPrUrl = prUrl;
+          if (ctx.onLog) {
+            await ctx.onLog("stdout", `[jules] Discovered pull request created by Jules: ${prUrl}\n`);
+          }
+          try {
+            await moveIssueToReview(taskId, prUrl, ctx.authToken, ctx.runId);
+          } catch {
+            /* best-effort early registration */
+          }
       }
 
       // Mirroring must never prevent terminal detection: a mirror failure used to
@@ -864,9 +943,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Unconditional: whenever Jules is actively coding, ensure the board
       // reflects it. Covers blocked→in_progress after retry-resume, and is a
       // no-op when already in_progress (Paperclip handles idempotent PATCHes).
-      if (state === 'IN_PROGRESS') {
-        try { await moveIssueToInProgress(taskId, ctx.authToken,
-          `Jules session is actively working.`, ctx.runId); }
+      // Only flip status if recovering from a non-in_progress state (e.g. was blocked)
+      // Otherwise do not call PATCH /api/issues to avoid triggering spurious status events
+      if (state === 'IN_PROGRESS' && session.phase !== 'RUNNING') {
+        try { await moveIssueToInProgress(taskId, ctx.authToken, undefined, ctx.runId); }
         catch { /* board unavailable; session continues regardless */ }
       }
       session.phase = stateMachineRes.nextPhase;
@@ -994,9 +1074,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 ? session.pendingInteraction
                 : null;
               if (!pending) {
-                const activity = latestAgentMessage(activities);
-                const question = activity?.agentMessaged?.agentMessage ??
-                  "Jules is waiting for feedback. Open the Jules session for the full question.";
+                let activity = latestAgentMessage(activities);
+                if (!activity) {
+                  const allActivities = await listAllActivities(client, session.julesSessionId!);
+                  activity = latestAgentMessage(allActivities);
+                }
+                const question = extractQuestionText(activity);
                 const activityId = activity?.id ?? "awaiting-user-feedback";
                 const interactionAttempt = (session.feedbackInteractionAttempt ?? 0) + 1;
                 const interaction = await createJulesFeedbackInteraction(

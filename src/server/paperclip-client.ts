@@ -147,7 +147,7 @@ export async function moveIssueToReview(
 export async function moveIssueToInProgress(
   issueId: string,
   authToken: string | undefined,
-  comment: string,
+  comment?: string,
   runId?: string,
 ): Promise<void> {
   await moveIssue(issueId, "in_progress", authToken, comment, runId);
@@ -231,7 +231,7 @@ export async function createJulesFeedbackInteraction(
           submitLabel: "Send to Jules",
           questions: [{
             id: "reply",
-            prompt: question.slice(0, 500),
+            prompt: question.slice(0, 2000),
             helpText: "Enter your response in the Other field.",
             selectionMode: "single",
             required: true,

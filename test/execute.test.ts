@@ -65,7 +65,7 @@ beforeAll(() => {
     expect(res.errorFamily).toBe('transient_upstream');
     expect(res.clearSession).toBe(false);
     expect(res.sessionParams).toBeDefined();
-    expect(new Date(res.retryNotBefore!).getTime()).toBeGreaterThanOrEqual(before + 15 * 1000);
+    expect(new Date(res.retryNotBefore!).getTime()).toBeGreaterThanOrEqual(before + 5 * 1000);
     expect(new Date(res.retryNotBefore!).getTime()).toBeLessThan(before + 60 * 1000);
 
     const session = sessionCodec.decode(res.sessionParams!);

@@ -340,6 +340,24 @@ export async function createJulesPlanApprovalInteraction(
   };
 }
 
+export async function withdrawPaperclipInteraction(
+  issueId: string,
+  interactionId: string,
+  reason: string,
+  authToken: string | undefined,
+  runId?: string,
+): Promise<void> {
+  await paperclipRequest(
+    `/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/withdraw`,
+    authToken,
+    {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    },
+    runId,
+  );
+}
+
 export async function listPaperclipInteractions(
   issueId: string,
   authToken: string | undefined,

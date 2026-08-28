@@ -23,6 +23,17 @@ export function getRetryNotBefore(
   return (options.now ?? Date.now()) + delayMs;
 }
 
+/**
+ * Parses a Retry-After header value to determine the retry delay in milliseconds.
+ *
+ * Supports both standard formats for the Retry-After header:
+ * - A delay in seconds (e.g., "120")
+ * - An HTTP-Date (e.g., "Fri, 31 Dec 1999 23:59:59 GMT")
+ *
+ * @param value - The Retry-After header string value.
+ * @param now - Optional. The current timestamp in milliseconds (defaults to Date.now()).
+ * @returns The retry delay in milliseconds, or null if the value is invalid or missing.
+ */
 export function parseRetryAfter(value: string | null, now = Date.now()): number | null {
   if (!value) return null;
   const seconds = Number(value);

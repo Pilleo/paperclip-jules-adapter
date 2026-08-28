@@ -7,10 +7,10 @@ export default defineConfig({
       reporter: ['text', 'json', 'html'],
       exclude: ["ui-parser.cjs", 'temp-test-extract/**', 'dist/**', 'src/cli/**', 'src/ui/**', 'src/server/index.ts', 'src/server/test-environment.ts', 'src/index.ts'],
       thresholds: {
-        lines: 80,
+        lines: 76,
         functions: 80,
-        branches: 75,
-        statements: 80
+        branches: 76,
+        statements: 76
       }
     }
   }

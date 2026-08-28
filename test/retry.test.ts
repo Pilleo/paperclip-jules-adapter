@@ -86,7 +86,30 @@ beforeAll(() => {
   it('honors Retry-After when it exceeds jittered backoff', () => {
     const now = Date.parse('2026-08-08T10:00:00.000Z');
     expect(getRetryNotBefore(1, { now, random: 0.5, retryAfterMs: 300_000 })).toBe(now + 300_000);
-    expect(parseRetryAfter('120', now)).toBe(120_000);
-    expect(parseRetryAfter('Sat, 08 Aug 2026 10:03:00 GMT', now)).toBe(180_000);
+  });
+
+  describe('parseRetryAfter', () => {
+    it('parses seconds format correctly', () => {
+      const now = Date.now();
+      expect(parseRetryAfter('120', now)).toBe(120_000);
+      expect(parseRetryAfter('0', now)).toBe(0);
+    });
+
+    it('parses HTTP-Date format correctly', () => {
+      const now = Date.parse('2026-08-08T10:00:00.000Z');
+      expect(parseRetryAfter('Sat, 08 Aug 2026 10:03:00 GMT', now)).toBe(180_000);
+    });
+
+    it('returns null for invalid inputs or empty strings', () => {
+      const now = Date.now();
+      expect(parseRetryAfter(null, now)).toBe(null);
+      expect(parseRetryAfter('', now)).toBe(null);
+      expect(parseRetryAfter('invalid', now)).toBe(null);
+    });
+
+    it('returns 0 if HTTP-Date is in the past', () => {
+      const now = Date.parse('2026-08-08T10:00:00.000Z');
+      expect(parseRetryAfter('Fri, 07 Aug 2026 10:00:00 GMT', now)).toBe(0);
+    });
   });
 });

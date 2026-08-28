@@ -70,5 +70,10 @@
   },
   "paperclip": {
     "adapterUiParser": "1.0.0"
+  },
+  "overrides": {
+    "vite": {
+      "@types/node": "22.0.0"
+    }
   }
 }
